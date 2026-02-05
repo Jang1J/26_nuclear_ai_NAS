@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ls:*)",
+      "Bash(for f in $prefix_*)",
+      "Bash(done)",
+      "Bash(for f in *.csv)",
+      "Bash(python:*)",
+      "Bash(conda list:*)",
+      "Bash(conda env:*)",
+      "Bash(pip show:*)",
+      "Bash(/opt/anaconda3/bin/python:*)",
+      "Bash(/opt/anaconda3/envs/team_6/bin/python:*)"
+    ]
+  }
+}

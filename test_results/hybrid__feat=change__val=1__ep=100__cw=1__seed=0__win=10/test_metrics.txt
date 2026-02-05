@@ -1,0 +1,17 @@
+test_loss: 0.272458
+test_acc : 0.897391
+inference_time: 0.163s (0.2827ms/sample)
+train_time: 5.5s
+
+              precision    recall  f1-score   support
+
+      NORMAL       0.94      0.94      0.94        18
+        LOCA       1.00      0.88      0.93        57
+        SGTR       0.76      0.99      0.86       166
+     MSLB_in       1.00      0.85      0.92       168
+    MSLB_out       0.96      0.86      0.90       166
+
+    accuracy                           0.90       575
+   macro avg       0.93      0.90      0.91       575
+weighted avg       0.92      0.90      0.90       575
+
