@@ -295,6 +295,13 @@ def run_single(args):
         model.save(model_path)
         print("[Saved model]", model_path)
 
+        # 학습에 사용된 클래스 정보 저장
+        available_classes = np.unique(ytr)
+        class_mapping_path = model_dir / f"{run_name}__class_mapping.npy"
+        np.save(class_mapping_path, available_classes)
+        print(f"[Saved class mapping] {class_mapping_path}")
+        print(f"  Available classes: {[ID2LABEL[int(c)] for c in available_classes]}")
+
         if history is not None:
             save_acc_loss(history, str(train_acc_path), str(train_loss_path))
             print("[Saved train curves]", train_acc_path, train_loss_path)
@@ -305,6 +312,15 @@ def run_single(args):
             raise FileNotFoundError(f"Model not found: {model_path}")
         model = tf.keras.models.load_model(model_path)
         print("[Loaded model]", model_path)
+
+        # 클래스 매핑 정보 로드 (있으면)
+        class_mapping_path = model_dir / f"{run_name}__class_mapping.npy"
+        if class_mapping_path.exists():
+            available_classes = np.load(class_mapping_path)
+            print(f"[Loaded class mapping] {class_mapping_path}")
+            print(f"  Available classes: {[ID2LABEL[int(c)] for c in available_classes]}")
+        else:
+            print("[Warning] No class mapping file found. Using all classes.")
 
     # 7) 테스트
     if args["test_noise"] > 0:
@@ -318,13 +334,17 @@ def run_single(args):
     n_test = len(yte)
     per_sample_ms = (inference_time / n_test) * 1000
 
+    # 실제 데이터에 존재하는 클래스만 사용
+    unique_classes = np.unique(yte)
+    target_names = [LABELS[i] for i in unique_classes]
+
     with open(metrics_path, "w", encoding="utf-8") as f:
         f.write(f"test_loss: {test_loss:.6f}\n")
         f.write(f"test_acc : {test_acc:.6f}\n")
         f.write(f"inference_time: {inference_time:.3f}s ({per_sample_ms:.4f}ms/sample)\n")
         if args["train"]:
             f.write(f"train_time: {train_time:.1f}s\n")
-        f.write(f"\n{classification_report(yte, y_pred, target_names=LABELS)}\n")
+        f.write(f"\n{classification_report(yte, y_pred, labels=unique_classes, target_names=target_names)}\n")
 
     print("\n[Saved test metrics]", metrics_path)
     print("\n[Test result]")
@@ -333,10 +353,15 @@ def run_single(args):
     print(f"  inference: {inference_time:.3f}s total, {per_sample_ms:.4f}ms/sample")
 
     # 8) 시각화
-    save_confusion_matrix(yte, y_pred, LABELS, str(cm_path))
+    # 9개 클래스 전체 구조로 시각화 (누락된 클래스는 회색 표시)
+    available_classes_viz = unique_classes if args["train"] else None
+
+    # 전체 9개 클래스 기준으로 시각화
+    all_labels = LABELS
+    save_confusion_matrix(yte, y_pred, all_labels, str(cm_path), available_classes=unique_classes)
     print("[Saved confusion matrix]", cm_path)
 
-    save_per_class_accuracy(yte, y_pred, LABELS, str(per_class_path))
+    save_per_class_accuracy(yte, y_pred, all_labels, str(per_class_path), available_classes=unique_classes)
     print("[Saved per-class accuracy]", per_class_path)
 
 
@@ -432,12 +457,26 @@ def run_ensemble(args):
             model_path = model_dir / f"{run_name}__{tag}__model.keras"
             model.save(model_path)
             print("[Saved model]", model_path)
+
+            # 클래스 매핑 저장 (앙상블의 경우 첫 번째 모델에만)
+            if tag == "mlp_v2":
+                available_classes = np.unique(ytr_in)
+                class_mapping_path = model_dir / f"{run_name}__class_mapping.npy"
+                np.save(class_mapping_path, available_classes)
+                print(f"[Saved class mapping] {class_mapping_path}")
         else:
             model_path = model_dir / f"{run_name}__{tag}__model.keras"
             if not model_path.exists():
                 raise FileNotFoundError(f"Model not found: {model_path}")
             model = tf.keras.models.load_model(model_path)
             print("[Loaded model]", model_path)
+
+            # 클래스 매핑 로드 (앙상블의 경우 첫 번째 모델에만)
+            if tag == "mlp_v2":
+                class_mapping_path = model_dir / f"{run_name}__class_mapping.npy"
+                if class_mapping_path.exists():
+                    available_classes = np.load(class_mapping_path)
+                    print(f"[Loaded class mapping] Available: {[ID2LABEL[int(c)] for c in available_classes]}")
 
         # val / test 확률
         v_prob, _ = _predict_proba(model, Xva_in)
@@ -515,16 +554,22 @@ def run_ensemble(args):
             f.write("\n[train_time]\n")
             for k in ["mlp_v2", "cnn1d", "hybrid"]:
                 f.write(f"  {k}: {train_times.get(k, 0.0):.1f}s\n")
-        f.write(f"\n{classification_report(yte_win, y_pred_ens, target_names=LABELS)}\n")
+
+        # 실제 데이터에 존재하는 클래스만 사용
+        unique_classes = np.unique(yte_win)
+        target_names = [LABELS[i] for i in unique_classes]
+        f.write(f"\n{classification_report(yte_win, y_pred_ens, labels=unique_classes, target_names=target_names)}\n")
 
     print("\n[Saved test metrics]", metrics_path)
     print("\n[Test result] ensemble")
     print(f"  acc : {test_acc:.6f}")
 
-    save_confusion_matrix(yte_win, y_pred_ens, LABELS, str(cm_path))
+    # 시각화 (9개 클래스 전체 구조)
+    all_labels = LABELS
+    save_confusion_matrix(yte_win, y_pred_ens, all_labels, str(cm_path), available_classes=unique_classes)
     print("[Saved confusion matrix]", cm_path)
 
-    save_per_class_accuracy(yte_win, y_pred_ens, LABELS, str(per_class_path))
+    save_per_class_accuracy(yte_win, y_pred_ens, all_labels, str(per_class_path), available_classes=unique_classes)
     print("[Saved per-class accuracy]", per_class_path)
 
 

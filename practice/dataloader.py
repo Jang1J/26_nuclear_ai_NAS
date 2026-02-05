@@ -6,21 +6,37 @@ import multiprocessing
 from functools import partial
 from multiprocessing import Pool
 
-# 우리가 최종적으로 분류할 5개 클래스
-LABELS = ["NORMAL", "LOCA", "SGTR", "MSLB_in", "MSLB_out"]
+# 우리가 최종적으로 분류할 9개 클래스
+LABELS = [
+    "NORMAL",        # 0: 정상
+    "LOCA_HL",       # 1: Hot Leg LOCA
+    "LOCA_CL",       # 2: Cold Leg LOCA
+    "LOCA_RCPCSEAL", # 3: RCP Seal LOCA
+    "SGTR_SG1",      # 4: 증기발생기 1번 파열
+    "SGTR_SG2",      # 5: 증기발생기 2번 파열
+    "SGTR_SG3",      # 6: 증기발생기 3번 파열
+    "MSLB_in",       # 7: 주증기관 파열 (내부)
+    "MSLB_out"       # 8: 주증기관 파열 (외부)
+]
 LABEL2ID = {name: i for i, name in enumerate(LABELS)}
 ID2LABEL = {i: name for name, i in LABEL2ID.items()}
 
 
 def infer_label_id(file_name: str):
     """
-    파일명 prefix로 라벨 id 추론.
+    파일명 prefix로 라벨 id 추론 (9개 클래스).
     지원하는 예:
-      - LOCA_10050_10_1.csv
-      - SGTR_10004_10_1.csv
-      - MSLBIN_110100_10_1.csv
-      - MSLBOUT_210100_10_1.csv
-      - collect_NORMAL_20260204_220653.csv
+      - NORMAL_*.csv
+      - LOCA_HL_*.csv (Hot Leg LOCA)
+      - LOCA_CL_*.csv (Cold Leg LOCA)
+      - LOCA_RCPCSEAL_*.csv (RCP Seal LOCA)
+      - SGTR_SG1_*.csv (증기발생기 1번)
+      - SGTR_SG2_*.csv (증기발생기 2번)
+      - SGTR_SG3_*.csv (증기발생기 3번)
+      - MSLBIN_*.csv (MSLB Inside)
+      - MSLBOUT_*.csv (MSLB Outside)
+
+    현재 데이터: LOCA_HL(0개), LOCA_RCPCSEAL(0개) 제외한 7개 클래스
     """
     base = os.path.basename(file_name)
 
@@ -31,14 +47,40 @@ def infer_label_id(file_name: str):
     # 일반 prefix
     if base.startswith("NORMAL_"):
         return LABEL2ID["NORMAL"]
-    if base.startswith("LOCA_"):
-        return LABEL2ID["LOCA"]
-    if base.startswith("SGTR_"):
-        return LABEL2ID["SGTR"]
-    if base.startswith("MSLBIN_"):
+
+    # LOCA 세분화 (Hot Leg, Cold Leg, RCP Seal)
+    if base.startswith("LOCA_HL_"):
+        return LABEL2ID["LOCA_HL"]
+    if base.startswith("LOCA_CL_"):
+        return LABEL2ID["LOCA_CL"]
+    if base.startswith("LOCA_RCPCSEAL_"):
+        return LABEL2ID["LOCA_RCPCSEAL"]
+
+    # SGTR 세분화 (SG1, SG2, SG3)
+    if base.startswith("SGTR_SG1_"):
+        return LABEL2ID["SGTR_SG1"]
+    if base.startswith("SGTR_SG2_"):
+        return LABEL2ID["SGTR_SG2"]
+    if base.startswith("SGTR_SG3_"):
+        return LABEL2ID["SGTR_SG3"]
+
+    # MSLB (Inside, Outside)
+    if base.startswith("MSLBIN_") or base.startswith("MSLB_in_"):
         return LABEL2ID["MSLB_in"]
-    if base.startswith("MSLBOUT_"):
+    if base.startswith("MSLBOUT_") or base.startswith("MSLB_out_"):
         return LABEL2ID["MSLB_out"]
+
+    # ⚠️ 이전 형식 호환성: 세부 분류되지 않은 데이터
+    # 파일명에서 자동으로 LOCA_CL로 매핑 (현재 데이터가 모두 Cold Leg인 경우)
+    if base.startswith("LOCA_"):
+        # 향후 데이터가 세부 분류되면 이 경고가 사라질 것
+        return LABEL2ID["LOCA_CL"]
+
+    # SGTR도 마찬가지로 세부 분류되지 않은 경우
+    # 실제 데이터를 보고 SG1/SG2/SG3 중 적절히 매핑 필요
+    # 임시로 SG1로 매핑
+    if base.startswith("SGTR_"):
+        return LABEL2ID["SGTR_SG1"]
 
     return None
 
@@ -46,7 +88,7 @@ def infer_label_id(file_name: str):
 def extract_number(fname: str) -> int:
     """
     파일명 끝의 번호를 정렬키로 쓰기.
-    예: LOCA_10050_10_3.csv -> 3
+    예: LOCA_100100_10_1.csv -> 1
         MSLBIN_120100_10_3+.csv 처럼 이상한 문자가 있어도 마지막 숫자를 잡아줌.
     """
     base = os.path.basename(fname)
@@ -71,11 +113,12 @@ def load_one_csv(file_name: str, folder_path: str, include_time: bool = False):
     return df, y
 
 
-def load_Xy(folder_path: str, include_time: bool = False, n_workers=None):
+def load_Xy(folder_path: str, include_time: bool = False, n_workers=None, verbose=True):
     """
     폴더 전체의 CSV를 읽어 (X,y,feature_names) 반환.
     - 파일 리스트는 (라벨 순서, 번호 순서) 로 정렬
     - multiprocessing 사용
+    - verbose=True일 때 실제 클래스 분포 출력
     """
     file_list = [f for f in os.listdir(folder_path) if f.lower().endswith(".csv")]
     file_list = [f for f in file_list if infer_label_id(f) is not None]
@@ -108,6 +151,26 @@ def load_Xy(folder_path: str, include_time: bool = False, n_workers=None):
 
     X = np.vstack(X_list)
     y = np.concatenate(y_list)
+
+    # 실제 데이터 클래스 분포 출력
+    if verbose:
+        print("\n[Data Class Distribution]")
+        unique_labels, counts = np.unique(y, return_counts=True)
+        print(f"Total samples: {len(y)}")
+        for label_id, count in zip(unique_labels, counts):
+            class_name = ID2LABEL.get(int(label_id), f"UNKNOWN({label_id})")
+            print(f"  {class_name:15s}: {count:6d} samples")
+
+        # 누락된 클래스 경고
+        missing_classes = []
+        for i, label_name in enumerate(LABELS):
+            if i not in unique_labels:
+                missing_classes.append(label_name)
+
+        if missing_classes:
+            print(f"\n⚠️  Missing classes in current data: {', '.join(missing_classes)}")
+            print("   (This is OK if you plan to add them later)")
+
     return X, y, feature_names
 
 
@@ -146,7 +209,7 @@ def create_sliding_windows_grouped(X, y, window_size, group_size):
 
 
 if __name__ == "__main__":
-    folder = "/home/runtime/SG/data/AI_bootcamp_r1/"  # 예시
+    folder = "data/data_new"  # 예시
     X, y, feature_names = load_Xy(folder, include_time=False)
     print("[dataloader]")
     print("X:", X.shape[1:])

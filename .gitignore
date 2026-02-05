@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Project specific
+data/
+models/*.keras
+models/*.npy
+train_results/
+test_results/
+*.log
+
+# SSH keys
+*.pub
+eval*
+
+# Temporary
+*.tmp
+*.bak
+*~

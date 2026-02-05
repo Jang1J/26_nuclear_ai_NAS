@@ -390,7 +390,7 @@ if __name__ == "__main__":
     # (시연용) 이 파일만 실행해도 동작 확인 가능
     from .dataloader import load_Xy
 
-    folder = "/home/runtime/SG/data/AI_bootcamp_r1/"
+    folder = "data/data_new"
     X, y, feature_names = load_Xy(folder, include_time=False)
 
     _feature_method = "change"  # all / change / selection

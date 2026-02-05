@@ -10,7 +10,17 @@
       "Bash(conda env:*)",
       "Bash(pip show:*)",
       "Bash(/opt/anaconda3/bin/python:*)",
-      "Bash(/opt/anaconda3/envs/team_6/bin/python:*)"
+      "Bash(/opt/anaconda3/envs/team_6/bin/python:*)",
+      "Bash(pip install:*)",
+      "Bash(conda info:*)",
+      "Bash(source ~/.zshrc)",
+      "Bash(conda activate:*)",
+      "Bash(jupyter nbconvert:*)",
+      "Bash(python3 -c \" import sys, json nb = json.load\\(sys.stdin\\) for cell in nb[''cells'']: if ''source'' in cell and isinstance\\(cell[''source''], list\\): for i, line in enumerate\\(cell[''source'']\\): if ''!python practice/main.py'' in line: cell[''source''][i] = line.replace\\(''!python practice/main.py'', ''!python -m practice.main''\\) elif ''!$PYTHON -m practice.main'' in line: cell[''source''][i] = line.replace\\(''!$PYTHON -m practice.main'', ''!python -m practice.main''\\) print\\(json.dumps\\(nb, indent=1\\)\\) \")",
+      "Bash(chmod:*)",
+      "Bash(find:*)",
+      "Bash(conda run -n team_6 python:*)",
+      "Bash(tree:*)"
     ]
   }
 }
