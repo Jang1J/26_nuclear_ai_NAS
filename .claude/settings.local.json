@@ -20,7 +20,8 @@
       "Bash(chmod:*)",
       "Bash(find:*)",
       "Bash(conda run -n team_6 python:*)",
-      "Bash(tree:*)"
+      "Bash(tree:*)",
+      "Bash(grep:*)"
     ]
   }
 }
