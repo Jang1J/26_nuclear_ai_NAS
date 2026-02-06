@@ -20,8 +20,58 @@ import numpy as np
 import tensorflow as tf
 from pathlib import Path
 
-from practice.dataloader import LABELS, ID2LABEL, LABEL2ID
+from practice.dataloader import LABELS, ID2LABEL, LABEL2ID, _resolve_useless_json_path
 from practice.preprocessing import PreprocessingPipeline
+
+
+def is_complete_model(model_path: str) -> bool:
+    """
+    모델 아티팩트 3종(model.keras, feature_transformer.pkl, preprocessing_metadata.json)이
+    모두 존재하는지 확인.
+    """
+    prefix = model_path.replace("__model.keras", "")
+    required = [
+        f"{prefix}__feature_transformer.pkl",
+        f"{prefix}__preprocessing_metadata.json",
+    ]
+    return all(Path(r).exists() for r in required)
+
+
+def find_valid_models(models_dir: str = "models") -> list:
+    """
+    models/ 디렉토리에서 유효한 모델 후보만 반환.
+    - ._* (macOS 리소스 포크) 제외
+    - __MACOSX 경로 제외
+    - 아티팩트 3종 완전한 모델만 포함
+    """
+    import glob as _glob
+
+    # 프로젝트 루트 기준으로도 탐색
+    models_path = Path(models_dir)
+    if not models_path.is_dir():
+        project_root = Path(__file__).resolve().parent
+        models_path = project_root / models_dir
+    if not models_path.is_dir():
+        return []
+
+    candidates = sorted(_glob.glob(str(models_path / "*__model.keras")))
+
+    valid = []
+    for c in candidates:
+        basename = Path(c).name
+        # macOS 리소스 포크 제외
+        if basename.startswith("._"):
+            continue
+        # __MACOSX 경로 제외
+        if "__MACOSX" in c:
+            continue
+        # 아티팩트 완전성 체크
+        if not is_complete_model(c):
+            print(f"[WARNING] Incomplete model (missing pipeline artifacts), skipping: {basename}")
+            continue
+        valid.append(c)
+
+    return valid
 
 
 class CompetitionSystem:
@@ -55,10 +105,11 @@ class CompetitionSystem:
         # prefix 기반으로 올바른 파이프라인 로드
         self.preprocessing = PreprocessingPipeline.load(model_dir, prefix=prefix)
 
-        # useless features 목록 로드
+        # useless features 목록 로드 (CWD 독립 경로 탐색)
         self._useless_features = set()
-        if Path(useless_features_json).exists():
-            with open(useless_features_json, 'r') as f:
+        resolved_useless = _resolve_useless_json_path(useless_features_json)
+        if Path(resolved_useless).exists():
+            with open(resolved_useless, 'r') as f:
                 useless_data = json.load(f)
             self._useless_features = set(useless_data.get("useless_features", []))
 

@@ -206,6 +206,16 @@ class PreprocessingPipeline:
             metadata_path = directory / f"{prefix}__preprocessing_metadata.json"
             scaler_path = directory / f"{prefix}__scaler.pkl"
             feat_transformer_path = directory / f"{prefix}__feature_transformer.pkl"
+
+            # prefix 파일이 없으면 generic으로 fallback (v1 모델 호환)
+            if not metadata_path.exists():
+                generic_meta = directory / "preprocessing_metadata.json"
+                if generic_meta.exists():
+                    print(f"[Pipeline] Prefix '{prefix}' files not found, "
+                          f"falling back to generic pipeline")
+                    metadata_path = generic_meta
+                    scaler_path = directory / "scaler.pkl"
+                    feat_transformer_path = directory / "feature_transformer.pkl"
         else:
             # 자동 탐색: prefix 파일이 있으면 사용, 없으면 generic
             metadata_path = directory / "preprocessing_metadata.json"

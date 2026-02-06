@@ -5,6 +5,7 @@ import numpy as np
 import pandas as pd
 import multiprocessing
 from functools import partial
+from pathlib import Path
 from multiprocessing import Pool
 
 # 새 라벨링 체계 (9개 클래스)
@@ -76,6 +77,32 @@ def extract_number(fname: str) -> int:
     return int(nums[-1]) if nums else -1
 
 
+def _resolve_useless_json_path(useless_features_json: str) -> str:
+    """
+    useless_features json 파일을 CWD에 무관하게 찾는다.
+
+    탐색 우선순위:
+      1) 입력 경로가 이미 실제 파일이면 그대로 사용
+      2) 프로젝트 루트(practice/ 상위 폴더 = NAS/) 기준
+      3) CWD 기준 (기존 동작 호환)
+    """
+    p = Path(useless_features_json)
+    if p.is_file():
+        return str(p)
+
+    # practice/dataloader.py 기준 → 부모의 부모 = NAS/
+    project_root = Path(__file__).resolve().parents[1]
+    cand = project_root / useless_features_json
+    if cand.is_file():
+        return str(cand)
+
+    cand = Path.cwd() / useless_features_json
+    if cand.is_file():
+        return str(cand)
+
+    return useless_features_json  # 못 찾으면 원래대로 (이후 exists 체크에서 skip)
+
+
 def load_one_csv(file_name: str, folder_path: str, include_time: bool = False):
     label_id = infer_label_id(file_name)
     if label_id is None:
@@ -130,6 +157,7 @@ def load_Xy(folder_path: str, include_time: bool = False, n_workers=None, verbos
 
     # 쓸모없는 변수 제거
     if exclude_useless_features:
+        useless_features_json = _resolve_useless_json_path(useless_features_json)
         if os.path.exists(useless_features_json):
             with open(useless_features_json, 'r') as f:
                 useless_data = json.load(f)
@@ -141,6 +169,7 @@ def load_Xy(folder_path: str, include_time: bool = False, n_workers=None, verbos
             if verbose:
                 print(f"\nRemoving {len(remove_indices)} useless features")
                 print(f"   Features: {len(feature_names)} -> {len(keep_indices)}")
+                print(f"   Resolved path: {useless_features_json}")
 
             X = X[:, keep_indices]
             feature_names = [feature_names[i] for i in keep_indices]
@@ -211,6 +240,7 @@ def load_Xy_runs(folder_path: str, include_time: bool = False, n_workers=None, v
 
     # 쓸모없는 변수 제거
     if exclude_useless_features:
+        useless_features_json = _resolve_useless_json_path(useless_features_json)
         if os.path.exists(useless_features_json):
             with open(useless_features_json, 'r') as f:
                 useless_data = json.load(f)
@@ -222,6 +252,7 @@ def load_Xy_runs(folder_path: str, include_time: bool = False, n_workers=None, v
             if verbose:
                 print(f"\nRemoving {len(remove_indices)} useless features")
                 print(f"   Features: {len(feature_names)} -> {len(keep_indices)}")
+                print(f"   Resolved path: {useless_features_json}")
 
             X_runs = [X[:, keep_indices] for X in X_runs]
             feature_names = [feature_names[i] for i in keep_indices]

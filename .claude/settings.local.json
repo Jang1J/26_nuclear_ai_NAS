@@ -34,7 +34,8 @@
       "Bash(pip3 list:*)",
       "Bash(~/anaconda3/bin/conda info:*)",
       "Bash(wc:*)",
-      "Bash(conda run:*)"
+      "Bash(conda run:*)",
+      "Bash(du:*)"
     ]
   }
 }

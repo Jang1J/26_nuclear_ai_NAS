@@ -425,12 +425,27 @@ class SHAPAnalyzer:
         shap_values = self.compute_shap_values(X, n_samples)
         n_explain = min(n_samples, len(X))
 
-        # shap_values 형태 통일
+        # ── SHAP values 차원 정규화 ──
+        # 입력 피처 수 기준으로 검증
+        n_input_features = X.shape[-1]  # 원래 피처 수 (예: 207)
+
         if isinstance(shap_values, list):
-            # GradientExplainer: list of (N, W, D) 배열 (클래스별)
             sv = np.array(shap_values)  # (n_classes, N, W, D)
         else:
             sv = shap_values
+            if sv.ndim == len(X[:n_explain].shape):
+                sv = np.expand_dims(sv, 0)
+
+        # 마지막 축이 피처 수와 일치하는지 검증
+        last_dim = sv.shape[-1]
+        if last_dim != n_input_features and last_dim == len(LABELS):
+            # (N, W, n_classes) 형태 → 피처가 아닌 클래스 출력
+            # 이 경우 Permutation Importance로 대체
+            print(f"  [SHAP] Warning: last dim={last_dim} != features={n_input_features}")
+            print(f"  [SHAP] SHAP output is per-class, not per-feature. Recomputing...")
+            sv = self._permutation_importance(X[:n_explain])
+            if isinstance(sv, list):
+                sv = np.array(sv)
             if sv.ndim == len(X[:n_explain].shape):
                 sv = np.expand_dims(sv, 0)
 
@@ -442,14 +457,21 @@ class SHAPAnalyzer:
             sv_flat = sv_abs.mean(axis=2)
             global_importance = sv_flat.mean(axis=(0, 1))  # (D,)
         elif sv_abs.ndim == 3:
-            sv_flat = sv_abs
-            global_importance = sv_flat.mean(axis=(0, 1))  # (D,)
+            # (N 또는 n_classes, X, D)
+            if sv_abs.shape[-1] == n_input_features:
+                sv_flat = sv_abs
+                global_importance = sv_flat.mean(axis=(0, 1))  # (D,)
+            else:
+                # 시간 축이 남아있을 수 있음: (N, W, D) → 평균
+                global_importance = sv_abs.mean(axis=(0, 1))
         else:
             sv_flat = sv_abs
             global_importance = sv_flat.mean(axis=0)  # (D,)
 
-        # 피처 이름과 중요도 정렬
+        # 피처 이름과 중요도 정렬 (반드시 n_input_features 기준)
         n_feat = len(global_importance)
+        if n_feat != len(feature_names):
+            print(f"  [SHAP] Warning: importance dim={n_feat}, feature_names={len(feature_names)}")
         names = feature_names[:n_feat] if len(feature_names) >= n_feat else \
             feature_names + [f"feat_{i}" for i in range(len(feature_names), n_feat)]
 
@@ -506,12 +528,21 @@ class SHAPAnalyzer:
 
         shap_values = self.compute_shap_values(X, n_samples)
         n_explain = min(n_samples, len(X))
+        n_input_features = X.shape[-1]
         unique_classes = np.unique(y[:n_explain])
 
         if isinstance(shap_values, list):
             sv = np.array(shap_values)
         else:
             sv = shap_values
+            if sv.ndim == len(X[:n_explain].shape):
+                sv = np.expand_dims(sv, 0)
+
+        # 차원 가드: 마지막 축이 피처가 아닌 클래스인 경우
+        if sv.shape[-1] != n_input_features and sv.shape[-1] == len(LABELS):
+            sv = self._permutation_importance(X[:n_explain])
+            if isinstance(sv, list):
+                sv = np.array(sv)
             if sv.ndim == len(X[:n_explain].shape):
                 sv = np.expand_dims(sv, 0)
 
@@ -601,11 +632,20 @@ class SHAPAnalyzer:
 
         shap_values = self.compute_shap_values(X, n_samples)
         predictions = self.model.predict(X[:n_samples], verbose=0)
+        n_input_features = X.shape[-1]
 
         if isinstance(shap_values, list):
             sv = np.array(shap_values)
         else:
             sv = shap_values
+            if sv.ndim == len(X[:n_samples].shape):
+                sv = np.expand_dims(sv, 0)
+
+        # 차원 가드: 마지막 축이 피처가 아닌 클래스인 경우
+        if sv.shape[-1] != n_input_features and sv.shape[-1] == len(LABELS):
+            sv = self._permutation_importance(X[:min(n_samples, len(X))])
+            if isinstance(sv, list):
+                sv = np.array(sv)
             if sv.ndim == len(X[:n_samples].shape):
                 sv = np.expand_dims(sv, 0)
 
@@ -689,60 +729,78 @@ class XAIAnalyzer:
         self.data_folder = data_folder
         self.seed = seed
 
-        # 모델/파이프라인 로드
-        self.config = self._load_config()
+        # 모델/파이프라인 로드 (prefix 1:1 매칭 보장)
+        self.config, self._config_prefix = self._load_config()
         self.model = self._load_model()
-        self.pipeline = PreprocessingPipeline.load(str(self.model_dir))
+        self.pipeline = PreprocessingPipeline.load(
+            str(self.model_dir), prefix=self._config_prefix
+        )
+        print(f"[XAI] Model-Pipeline prefix: '{self._config_prefix}'")
 
         # 테스트 데이터 준비
         self.X_test, self.y_test, self.feature_names = self._prepare_data()
 
-    def _load_config(self) -> dict:
+    def _load_config(self):
+        """Config 로드 + prefix 추출. (config, prefix) 튜플 반환."""
         configs = list(self.model_dir.glob("*__config.json"))
         if not configs:
             raise FileNotFoundError(f"Config 파일이 없습니다: {self.model_dir}")
 
         # cnn_attention 우선 선택
+        selected = None
         for c in configs:
             if "cnn_attention" in c.name:
-                with open(c) as f:
-                    config = json.load(f)
-                print(f"[Config] {c.name}")
-                return config
+                selected = c
+                break
 
-        with open(configs[0]) as f:
+        if selected is None:
+            selected = configs[0]
+
+        with open(selected) as f:
             config = json.load(f)
-        print(f"[Config] {configs[0].name}")
-        return config
+
+        # config 파일명에서 prefix 추출: "xxx__config.json" → "xxx"
+        prefix = selected.stem.replace("__config", "")
+        print(f"[Config] {selected.name}")
+        return config, prefix
 
     def _load_model(self) -> tf.keras.Model:
-        model_type = self.config.get("model_type", "cnn_attention")
+        """prefix와 정확히 매칭되는 모델 로드."""
         models = list(self.model_dir.glob("*__model.keras"))
         if not models:
             raise FileNotFoundError(f"모델 파일이 없습니다: {self.model_dir}")
 
         # 커스텀 객체 등록 (WarmupCosineSchedule 등)
         try:
-            from .main import WarmupCosineSchedule
+            from .main import WarmupCosineSchedule  # noqa: F401
         except Exception:
             pass
 
-        # config와 일치하는 모델 찾기
-        for m in models:
-            if model_type in m.name:
-                try:
-                    model = tf.keras.models.load_model(m)
-                except Exception:
-                    # compile 없이 로드 (커스텀 Loss/Optimizer 직렬화 문제 회피)
-                    model = tf.keras.models.load_model(m, compile=False)
-                print(f"[Model] {m.name}")
-                return model
+        # prefix와 정확히 일치하는 모델 우선 선택
+        target = None
+        if self._config_prefix:
+            expected_name = f"{self._config_prefix}__model.keras"
+            for m in models:
+                if m.name == expected_name:
+                    target = m
+                    break
+
+        # prefix 매칭 실패 시 model_type 기반 fallback
+        if target is None:
+            model_type = self.config.get("model_type", "cnn_attention")
+            for m in models:
+                if model_type in m.name:
+                    target = m
+                    break
+
+        if target is None:
+            target = models[0]
 
         try:
-            model = tf.keras.models.load_model(models[0])
+            model = tf.keras.models.load_model(target)
         except Exception:
-            model = tf.keras.models.load_model(models[0], compile=False)
-        print(f"[Model] {models[0].name}")
+            model = tf.keras.models.load_model(target, compile=False)
+        print(f"[Model] {target.name}")
         return model
 
     def _prepare_data(self):
