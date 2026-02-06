@@ -37,29 +37,35 @@ def build_cnn(window_size, n_features, n_classes, dropout_rate=0.3):
     CNN (1D Convolutional Neural Network)
     - 시계열 데이터의 국소 패턴 추출
     - 급격한 변화 감지에 효과적
+    - window_size가 작을 때 MaxPooling을 조건부 적용
     """
-    return models.Sequential([
-        layers.Input(shape=(window_size, n_features)),
-        layers.Conv1D(128, kernel_size=5, padding="same", activation="relu"),
-        layers.BatchNormalization(),
-        layers.Conv1D(128, kernel_size=5, padding="same", activation="relu"),
-        layers.BatchNormalization(),
-        layers.MaxPool1D(pool_size=2),
-        layers.Dropout(dropout_rate),
+    inputs = layers.Input(shape=(window_size, n_features))
 
-        layers.Conv1D(256, kernel_size=3, padding="same", activation="relu"),
-        layers.BatchNormalization(),
-        layers.Conv1D(256, kernel_size=3, padding="same", activation="relu"),
-        layers.BatchNormalization(),
-        layers.MaxPool1D(pool_size=2),
-        layers.Dropout(dropout_rate),
+    x = layers.Conv1D(128, kernel_size=3, padding="same", activation="relu")(inputs)
+    x = layers.BatchNormalization()(x)
+    x = layers.Conv1D(128, kernel_size=3, padding="same", activation="relu")(x)
+    x = layers.BatchNormalization()(x)
+    seq_len = window_size
+    if seq_len >= 4:
+        x = layers.MaxPool1D(pool_size=2)(x)
+        seq_len = seq_len // 2
+    x = layers.Dropout(dropout_rate)(x)
 
-        layers.GlobalAveragePooling1D(),
-        layers.Dense(128, activation="relu"),
-        layers.BatchNormalization(),
-        layers.Dropout(dropout_rate),
-        layers.Dense(n_classes, activation="softmax"),
-    ], name="CNN")
+    x = layers.Conv1D(256, kernel_size=3, padding="same", activation="relu")(x)
+    x = layers.BatchNormalization()(x)
+    x = layers.Conv1D(256, kernel_size=3, padding="same", activation="relu")(x)
+    x = layers.BatchNormalization()(x)
+    if seq_len >= 4:
+        x = layers.MaxPool1D(pool_size=2)(x)
+    x = layers.Dropout(dropout_rate)(x)
+
+    x = layers.GlobalAveragePooling1D()(x)
+    x = layers.Dense(128, activation="relu")(x)
+    x = layers.BatchNormalization()(x)
+    x = layers.Dropout(dropout_rate)(x)
+    outputs = layers.Dense(n_classes, activation="softmax")(x)
+
+    return models.Model(inputs=inputs, outputs=outputs, name="CNN")
 
 
 def build_cnn_attention(window_size, n_features, n_classes, dropout_rate=0.3, num_heads=4):

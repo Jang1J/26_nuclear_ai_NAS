@@ -1,194 +1,235 @@
 """
-경진대회 평가 인터페이스
+경진대회 실시간 평가 인터페이스
 
-요구사항:
-- 평가 시스템으로부터 데이터 수신
-- 5초마다 진단 결과 제출
-- 1분 이내 진단 완료
-- 표준 출력 형식으로 결과 반환
+대회 흐름:
+  - NORMAL 데이터가 계속 오다가 특정 시점에 사고가 발생
+  - 사고 발생 후 1분 안에 진단해야 함
+  - 매 1초마다 멘토 PC → 팀 PC: CNS 데이터 1행
+  - 매 1초마다 팀 PC → 멘토 PC: 결과 dict 반환
+    {
+      'results': 'NORMAL' or 'ESDE_in' 등,  # 현재 판단 클래스명
+      'Diagnostic_time': None or float,       # 사고 진단 확정 시간
+      'Class probabilities': [0.98, ...]      # 9개 클래스 확률
+    }
+  - 끊지 않고 60초 끝까지 매초 결과 반환
+  - 10회 시나리오 반복
 """
 
-import time
+import json
 import numpy as np
 import tensorflow as tf
 from pathlib import Path
-from practice.dataloader import LABELS, ID2LABEL
-from realtime_inference import RealtimeDiagnosticSystem
+
+from practice.dataloader import LABELS, ID2LABEL, LABEL2ID
+from practice.preprocessing import PreprocessingPipeline
 
 
-class CompetitionInterface:
-    """경진대회 평가 인터페이스"""
+class CompetitionSystem:
+    """
+    경진대회 실시간 진단 시스템.
 
-    def __init__(self, model_path: str, feature_method="all", window_size=None, class_mapping_path=None):
+    매 1초마다 1행 수신 → 즉시 결과 dict 반환.
+    NORMAL 상태에서 사고 감지 시 전환.
+    """
+
+    def __init__(self, model_path: str, window_size=3,
+                 useless_features_json: str = "useless_features_all.json"):
+        self.model = tf.keras.models.load_model(model_path)
+        self.window_size = window_size
+
+        # 전처리 파이프라인 로드
+        model_dir = Path(model_path).parent
+        self.preprocessing = PreprocessingPipeline.load(model_dir)
+
+        # useless features 목록 로드
+        self._useless_features = set()
+        if Path(useless_features_json).exists():
+            with open(useless_features_json, 'r') as f:
+                useless_data = json.load(f)
+            self._useless_features = set(useless_data.get("useless_features", []))
+
+        # 원본→파이프라인 피처 매핑 (set_feature_names 호출 시 설정)
+        self._keep_indices = None
+
+        # 클래스 매핑 로드
+        class_mapping_path = model_path.replace("__model.keras", "__class_mapping.npy")
+        if Path(class_mapping_path).exists():
+            self.available_classes = np.load(class_mapping_path)
+            self.missing_classes = [i for i in range(len(LABELS)) if i not in self.available_classes]
+        else:
+            self.available_classes = None
+            self.missing_classes = []
+
+        self.reset()
+
+    def set_feature_names(self, all_feature_names):
         """
+        원본 데이터의 전체 컬럼명을 설정.
+        학습 시 제거된 useless features의 인덱스를 자동 계산.
+
         Args:
-            model_path: 학습된 모델 경로
-            feature_method: 피처 추출 방법
-            window_size: 시계열 모델용 윈도우 크기
-            class_mapping_path: 클래스 매핑 파일 경로
+            all_feature_names: list — 원본 CSV의 전체 컬럼명 (KCNTOMS 제외 후)
         """
-        self.diagnostic_system = RealtimeDiagnosticSystem(
-            model_path=model_path,
-            feature_method=feature_method,
-            window_size=window_size,
-            class_mapping_path=class_mapping_path
-        )
-        self.submission_count = 0
+        expected_names = set(self.preprocessing.feature_names_in)
+        self._keep_indices = [
+            i for i, name in enumerate(all_feature_names)
+            if name in expected_names
+        ]
+        n_removed = len(all_feature_names) - len(self._keep_indices)
+        if n_removed > 0:
+            print(f"[CompetitionSystem] Removing {n_removed} useless features "
+                  f"({len(all_feature_names)} -> {len(self._keep_indices)})")
 
-    def receive_data(self):
+    def reset(self):
+        """새 시나리오 시작 시 호출."""
+        self.buffer = []
+        self.step = 0
+        self.diagnosed_time = None    # 사고 진단 확정 시간
+        self.diagnosed_class = None   # 확정된 사고 클래스명
+        self._last_probs = [0.0] * len(LABELS)
+
+    def receive_and_predict(self, row_data):
         """
-        평가 시스템으로부터 데이터 수신 (구현 필요)
+        매 1초마다 호출.
 
-        TODO: 실제 경진대회에서 제공하는 데이터 수신 프로토콜에 맞춰 구현
+        Args:
+            row_data: np.ndarray (D,) — CNS 센서 1행
 
         Returns:
-            numpy.ndarray: 수신된 센서 데이터 (N, D)
+            dict: {
+                'results': str,                    # 현재 판단 ('NORMAL' or 사고 클래스명)
+                'Diagnostic_time': None or float,  # 사고 진단 확정 시점
+                'Class probabilities': list        # 9개 클래스 확률
+            }
         """
-        # 예시: 소켓 통신, REST API, 파일 기반 등
-        # data = socket.recv()
-        # return np.array(data)
-        raise NotImplementedError("데이터 수신 프로토콜을 구현해야 합니다.")
+        self.step += 1
+        elapsed = float(self.step)
 
-    def submit_result(self, diagnosis_result: dict):
-        """
-        평가 시스템으로 결과 제출
+        row = row_data.astype(np.float32)
 
-        Args:
-            diagnosis_result: {
-                'diagnosed': bool,
-                'class_id': int,
-                'class_name': str,
-                'confidence': float,
-                'elapsed': float
+        # useless features 제거
+        if self._keep_indices is not None:
+            row = row[self._keep_indices]
+
+        # 버퍼에 추가
+        self.buffer.append(row)
+        X_chunk = np.array(self.buffer)
+
+        # 전처리
+        X_processed = self.preprocessing.transform(X_chunk)
+
+        # 윈도우 부족 → NORMAL 반환
+        if len(X_processed) < self.window_size:
+            self._last_probs = [0.0] * len(LABELS)
+            return {
+                'results': 'NORMAL',
+                'Diagnostic_time': None,
+                'Class probabilities': self._last_probs,
             }
 
-        TODO: 실제 경진대회에서 요구하는 출력 형식에 맞춰 구현
-        """
-        self.submission_count += 1
+        # 최근 윈도우 1개로 추론
+        X_window = X_processed[-self.window_size:]
+        X_input = X_window.reshape(1, self.window_size, -1)
 
-        # 표준 출력 형식 (예시)
-        output = {
-            "submission_id": self.submission_count,
-            "timestamp": time.time(),
-            "diagnosed": diagnosis_result['diagnosed'],
-            "class_id": diagnosis_result['class_id'],
-            "class_name": diagnosis_result['class_name'],
-            "confidence": diagnosis_result['confidence'],
-            "elapsed_time": diagnosis_result['elapsed']
-        }
+        y_prob = self.model.predict(X_input, verbose=0)[0]
 
-        # JSON 형식으로 출력 (예시)
-        import json
-        print(json.dumps(output, ensure_ascii=False))
+        # missing class 마스킹
+        if self.missing_classes:
+            y_prob[self.missing_classes] = 0.0
+            prob_sum = np.sum(y_prob)
+            if prob_sum > 0:
+                y_prob = y_prob / prob_sum
 
-        # 또는 소켓/REST API로 전송
-        # socket.send(json.dumps(output))
+        probs = y_prob.tolist()
+        self._last_probs = probs
 
-        return output
+        predicted_class = int(np.argmax(y_prob))
+        confidence = float(y_prob[predicted_class])
+        predicted_name = ID2LABEL[predicted_class]
 
-    def run_competition_mode(self, timeout=60.0, sampling_interval=5.0):
-        """
-        경진대회 모드 실행
+        # 이미 사고 확정된 경우 → 계속 같은 결과
+        if self.diagnosed_time is not None:
+            return {
+                'results': self.diagnosed_class,
+                'Diagnostic_time': self.diagnosed_time,
+                'Class probabilities': probs,
+            }
 
-        Args:
-            timeout: 최대 진단 시간 (초)
-            sampling_interval: 샘플링 간격 (초)
+        # NORMAL이면 그냥 NORMAL 반환 (사고 아직 안 옴)
+        if predicted_class == LABEL2ID["NORMAL"]:
+            return {
+                'results': 'NORMAL',
+                'Diagnostic_time': None,
+                'Class probabilities': probs,
+            }
 
-        Returns:
-            dict: 최종 진단 결과
-        """
-        print(f"\n{'='*60}")
-        print("경진대회 모드 시작")
-        print(f"제한 시간: {timeout}초")
-        print(f"샘플링 간격: {sampling_interval}초")
-        print(f"{'='*60}\n")
-
-        start_time = time.time()
-        data_buffer = []  # 누적 데이터
-
-        while True:
-            elapsed = time.time() - start_time
-
-            # 1. 데이터 수신
-            try:
-                new_data = self.receive_data()
-                data_buffer.append(new_data)
-            except NotImplementedError:
-                print("[Warning] 데이터 수신 프로토콜이 구현되지 않았습니다.")
-                print("테스트를 위해 로컬 데이터를 사용하세요.")
-                return None
-
-            # 2. 진단 수행
-            X_chunk = np.vstack(data_buffer)
-            result = self.diagnostic_system.diagnose_step(X_chunk, elapsed)
-
-            # 3. 결과 제출 (5초마다)
-            if elapsed % sampling_interval < 0.1:  # 오차 허용
-                self.submit_result(result)
-
-            # 4. 종료 조건
-            if result['diagnosed']:
-                print(f"\n✓ 진단 확정: {result['class_name']}")
-                print(f"  확신도: {result['confidence']:.3f}")
-                print(f"  소요 시간: {result['elapsed']:.1f}초")
-                return result
-
-            if elapsed >= timeout:
-                print(f"\n✗ 타임아웃: {timeout}초 초과")
-                # NORMAL 판정 또는 실패 처리
-                if result['class_id'] == 0:
-                    print("✓ NORMAL 판정")
-                    result['diagnosed'] = True
-                else:
-                    print("✗ 진단 실패")
-                    result['diagnosed'] = False
-                return result
-
-            # 다음 샘플링까지 대기
-            time.sleep(sampling_interval)
+        # 사고 감지! → 확신도에 따라 확정 여부 결정
+        if confidence >= 0.70:
+            # 확정
+            self.diagnosed_class = predicted_name
+            self.diagnosed_time = elapsed
+            return {
+                'results': predicted_name,
+                'Diagnostic_time': elapsed,
+                'Class probabilities': probs,
+            }
+        else:
+            # 사고 같지만 아직 확신 부족 → 클래스명은 보여주되 확정은 안 함
+            return {
+                'results': predicted_name,
+                'Diagnostic_time': None,
+                'Class probabilities': probs,
+            }
 
 
-def example_usage():
-    """사용 예시"""
-    # 모델 경로 설정
-    model_path = "models/mlp_v2__feat=all__val=1__ep=100__cw=1__seed=0__model.keras"
-    class_mapping_path = "models/mlp_v2__feat=all__val=1__ep=100__cw=1__seed=0__class_mapping.npy"
+# ─────────────────────────────────────────────
+# 로컬 테스트용
+# ─────────────────────────────────────────────
+def local_test(model_path, data_csv_path, window_size=3):
+    """
+    단일 CSV 파일로 대회 시뮬레이션.
+    60초 끝까지 매초 결과 출력 (break 없음).
+    """
+    import pandas as pd
 
-    # 인터페이스 초기화
-    interface = CompetitionInterface(
-        model_path=model_path,
-        feature_method="all",
-        window_size=None,
-        class_mapping_path=class_mapping_path
-    )
+    system = CompetitionSystem(model_path=model_path, window_size=window_size)
 
-    # 경진대회 모드 실행
-    result = interface.run_competition_mode(timeout=60.0, sampling_interval=5.0)
+    df = pd.read_csv(data_csv_path)
+    if "KCNTOMS" in df.columns:
+        df = df.drop(columns=["KCNTOMS"])
 
-    if result:
-        print("\n최종 결과:")
-        print(f"  진단: {result['class_name']}")
-        print(f"  확신도: {result['confidence']:.3f}")
-        print(f"  소요 시간: {result['elapsed']:.1f}초")
+    # 원본 컬럼명으로 useless features 매핑 설정
+    system.set_feature_names(list(df.columns))
+
+    print(f"\n{'='*70}")
+    print(f"Local test: {data_csv_path}")
+    print(f"Samples: {len(df)}, Features: {len(df.columns)}")
+    print(f"{'='*70}\n")
+
+    for i in range(min(len(df), 120)):  # 최대 120초 (NORMAL + 사고 60초)
+        row = df.iloc[i].values
+        result = system.receive_and_predict(row)
+
+        probs = result['Class probabilities']
+        top_prob = max(probs) if any(p > 0 for p in probs) else 0
+        diag = f"@ {result['Diagnostic_time']}s" if result['Diagnostic_time'] else ""
+
+        print(f"[{i+1:3d}s] {result['results']:15s} | conf={top_prob:.3f} {diag}")
+
+    print(f"\n{'='*70}")
+    print(f"Final: results={result['results']}, Diagnostic_time={result['Diagnostic_time']}")
+    print(f"{'='*70}")
+
+    return result
 
 
 if __name__ == "__main__":
     import argparse
 
-    parser = argparse.ArgumentParser(description="경진대회 평가 인터페이스")
-    parser.add_argument("--model", type=str, required=True, help="모델 경로 (.keras)")
-    parser.add_argument("--feature", type=str, default="all", help="피처 방법")
-    parser.add_argument("--window", type=int, default=None, help="윈도우 크기")
-    parser.add_argument("--class_mapping", type=str, default=None, help="클래스 매핑 파일")
-    parser.add_argument("--timeout", type=float, default=60.0, help="제한 시간 (초)")
-    parser.add_argument("--interval", type=float, default=5.0, help="샘플링 간격 (초)")
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--model", type=str, required=True)
+    parser.add_argument("--data", type=str, required=True, help="single CSV file")
+    parser.add_argument("--window", type=int, default=3)
     args = parser.parse_args()
 
-    interface = CompetitionInterface(
-        model_path=args.model,
-        feature_method=args.feature,
-        window_size=args.window,
-        class_mapping_path=args.class_mapping
-    )
-
-    result = interface.run_competition_mode(timeout=args.timeout, sampling_interval=args.interval)
+    local_test(args.model, args.data, args.window)

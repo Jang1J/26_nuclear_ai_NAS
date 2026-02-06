@@ -7,17 +7,17 @@ import multiprocessing
 from functools import partial
 from multiprocessing import Pool
 
-# 우리가 최종적으로 분류할 9개 클래스
+# 새 라벨링 체계 (9개 클래스)
 LABELS = [
-    "NORMAL",        # 0: 정상
-    "LOCA_HL",       # 1: Hot Leg LOCA
-    "LOCA_CL",       # 2: Cold Leg LOCA
-    "LOCA_RCPCSEAL", # 3: RCP Seal LOCA
-    "SGTR_SG1",      # 4: 증기발생기 1번 파열
-    "SGTR_SG2",      # 5: 증기발생기 2번 파열
-    "SGTR_SG3",      # 6: 증기발생기 3번 파열
-    "MSLB_in",       # 7: 주증기관 파열 (내부)
-    "MSLB_out"       # 8: 주증기관 파열 (외부)
+    "NORMAL",       # 0: 정상
+    "LOCA_HL",      # 1: Hot Leg LOCA
+    "LOCA_CL",      # 2: Cold Leg LOCA
+    "LOCA_RCP",     # 3: RCP Seal LOCA
+    "SGTR_Loop1",   # 4: SGTR 루프 1
+    "SGTR_Loop2",   # 5: SGTR 루프 2
+    "SGTR_Loop3",   # 6: SGTR 루프 3
+    "ESDE_in",      # 7: ESDE Inside
+    "ESDE_out",     # 8: ESDE Outside
 ]
 LABEL2ID = {name: i for i, name in enumerate(LABELS)}
 ID2LABEL = {i: name for name, i in LABEL2ID.items()}
@@ -25,75 +25,53 @@ ID2LABEL = {i: name for name, i in LABEL2ID.items()}
 
 def infer_label_id(file_name: str):
     """
-    파일명 prefix로 라벨 id 추론 (9개 클래스).
-    지원하는 예:
-      - NORMAL_*.csv
-      - LOCA_HL_*.csv (Hot Leg LOCA)
-      - LOCA_CL_*.csv (Cold Leg LOCA)
-      - LOCA_RCPCSEAL_*.csv (RCP Seal LOCA)
-      - SGTR_SG1_*.csv (증기발생기 1번)
-      - SGTR_SG2_*.csv (증기발생기 2번)
-      - SGTR_SG3_*.csv (증기발생기 3번)
-      - MSLBIN_*.csv (MSLB Inside)
-      - MSLBOUT_*.csv (MSLB Outside)
-
-    현재 데이터: LOCA_HL(0개), LOCA_RCPCSEAL(0개) 제외한 7개 클래스
+    파일명 prefix로 라벨 id 추론.
+    라벨링:
+      NORMAL.csv / NORMAL_*.csv  -> NORMAL (0)
+      LOCA_HL_*.csv              -> LOCA_HL (1)
+      LOCA_CL_*.csv              -> LOCA_CL (2)
+      LOCA_RCP_*.csv             -> LOCA_RCP (3)
+      SGTR_Loop1_*.csv           -> SGTR_Loop1 (4)
+      SGTR_Loop2_*.csv           -> SGTR_Loop2 (5)
+      SGTR_Loop3_*.csv           -> SGTR_Loop3 (6)
+      ESDE_in_Loop*_*.csv        -> ESDE_in (7)
+      ESDE_out_Loop*_*.csv       -> ESDE_out (8)
     """
     base = os.path.basename(file_name)
 
-    # collect_NORMAL_... 은 NORMAL로 취급
-    if base.startswith("collect_NORMAL_"):
+    # NORMAL (NORMAL.csv 또는 NORMAL_*.csv)
+    if base == "NORMAL.csv" or base.startswith("NORMAL_"):
         return LABEL2ID["NORMAL"]
 
-    # 일반 prefix
-    if base.startswith("NORMAL_"):
-        return LABEL2ID["NORMAL"]
-
-    # LOCA 세분화 (Hot Leg, Cold Leg, RCP Seal)
+    # LOCA 세분화 (순서 중요: HL, CL 먼저 매칭 후 RCP)
     if base.startswith("LOCA_HL_"):
         return LABEL2ID["LOCA_HL"]
     if base.startswith("LOCA_CL_"):
         return LABEL2ID["LOCA_CL"]
-    if base.startswith("LOCA_RCPCSEAL_"):
-        return LABEL2ID["LOCA_RCPCSEAL"]
+    if base.startswith("LOCA_RCP_"):
+        return LABEL2ID["LOCA_RCP"]
 
-    # SGTR 세분화 (SG1, SG2, SG3)
-    if base.startswith("SGTR_SG1_"):
-        return LABEL2ID["SGTR_SG1"]
-    if base.startswith("SGTR_SG2_"):
-        return LABEL2ID["SGTR_SG2"]
-    if base.startswith("SGTR_SG3_"):
-        return LABEL2ID["SGTR_SG3"]
+    # SGTR 세분화 (Loop1, Loop2, Loop3)
+    if base.startswith("SGTR_Loop1_"):
+        return LABEL2ID["SGTR_Loop1"]
+    if base.startswith("SGTR_Loop2_"):
+        return LABEL2ID["SGTR_Loop2"]
+    if base.startswith("SGTR_Loop3_"):
+        return LABEL2ID["SGTR_Loop3"]
 
-    # MSLB (Inside, Outside)
-    if base.startswith("MSLBIN_") or base.startswith("MSLB_in_"):
-        return LABEL2ID["MSLB_in"]
-    if base.startswith("MSLBOUT_") or base.startswith("MSLB_out_"):
-        return LABEL2ID["MSLB_out"]
-
-    # ⚠️ 이전 형식 호환성: 세부 분류되지 않은 데이터
-    # 파일명에서 자동으로 LOCA_CL로 매핑 (현재 데이터가 모두 Cold Leg인 경우)
-    if base.startswith("LOCA_"):
-        # 향후 데이터가 세부 분류되면 이 경고가 사라질 것
-        return LABEL2ID["LOCA_CL"]
-
-    # SGTR도 마찬가지로 세부 분류되지 않은 경우
-    # 실제 데이터를 보고 SG1/SG2/SG3 중 적절히 매핑 필요
-    # 임시로 SG1로 매핑
-    if base.startswith("SGTR_"):
-        return LABEL2ID["SGTR_SG1"]
+    # ESDE (Inside/Outside) — Loop 번호는 무시하고 in/out만 구분
+    # ESDE_out_Loop3__leak 같은 오타(언더스코어 2개)도 매칭
+    if base.startswith("ESDE_in_"):
+        return LABEL2ID["ESDE_in"]
+    if base.startswith("ESDE_out_"):
+        return LABEL2ID["ESDE_out"]
 
     return None
 
 
 def extract_number(fname: str) -> int:
-    """
-    파일명 끝의 번호를 정렬키로 쓰기.
-    예: LOCA_100100_10_1.csv -> 1
-        MSLBIN_120100_10_3+.csv 처럼 이상한 문자가 있어도 마지막 숫자를 잡아줌.
-    """
+    """파일명 끝의 번호를 정렬키로 사용."""
     base = os.path.basename(fname)
-    # 마지막에 등장하는 숫자들 중 맨 끝 숫자 추출
     nums = re.findall(r"(\d+)", base)
     return int(nums[-1]) if nums else -1
 
@@ -106,7 +84,6 @@ def load_one_csv(file_name: str, folder_path: str, include_time: bool = False):
     fp = os.path.join(folder_path, file_name)
     df = pd.read_csv(fp)
 
-    # 시간 컬럼이 KCNTOMS 로 들어오는 경우가 많음 (스크린샷 기준)
     if (not include_time) and ("KCNTOMS" in df.columns):
         df = df.drop(columns=["KCNTOMS"])
 
@@ -117,11 +94,7 @@ def load_one_csv(file_name: str, folder_path: str, include_time: bool = False):
 def load_Xy(folder_path: str, include_time: bool = False, n_workers=None, verbose=True,
             exclude_useless_features: bool = True, useless_features_json: str = "useless_features_all.json"):
     """
-    폴더 전체의 CSV를 읽어 (X,y,feature_names) 반환.
-    - 파일 리스트는 (라벨 순서, 번호 순서) 로 정렬
-    - multiprocessing 사용
-    - verbose=True일 때 실제 클래스 분포 출력
-    - exclude_useless_features=True(기본값)일 때 쓸모없는 변수를 자동으로 제거
+    폴더 전체의 CSV를 읽어 (X, y, feature_names) 반환.
     """
     file_list = [f for f in os.listdir(folder_path) if f.lower().endswith(".csv")]
     file_list = [f for f in file_list if infer_label_id(f) is not None]
@@ -162,23 +135,20 @@ def load_Xy(folder_path: str, include_time: bool = False, n_workers=None, verbos
                 useless_data = json.load(f)
             useless_list = useless_data.get("useless_features", [])
 
-            # 제거할 인덱스 찾기
             remove_indices = [i for i, name in enumerate(feature_names) if name in useless_list]
             keep_indices = [i for i in range(len(feature_names)) if i not in remove_indices]
 
             if verbose:
-                print(f"\n🗑️  Removing {len(remove_indices)} useless features (threshold={useless_data.get('threshold', 1.0)})")
-                print(f"   Features: {len(feature_names)} → {len(keep_indices)}")
+                print(f"\nRemoving {len(remove_indices)} useless features")
+                print(f"   Features: {len(feature_names)} -> {len(keep_indices)}")
 
-            # 변수 제거
             X = X[:, keep_indices]
             feature_names = [feature_names[i] for i in keep_indices]
         else:
             if verbose:
-                print(f"\n⚠️  Useless features JSON file not found: {useless_features_json}")
-                print("   Skipping feature removal. Run generate_useless_feature_list.py first.")
+                print(f"\nUseless features JSON not found: {useless_features_json}")
+                print("   Skipping feature removal.")
 
-    # 실제 데이터 클래스 분포 출력
     if verbose:
         print("\n[Data Class Distribution]")
         unique_labels, counts = np.unique(y, return_counts=True)
@@ -187,61 +157,137 @@ def load_Xy(folder_path: str, include_time: bool = False, n_workers=None, verbos
             class_name = ID2LABEL.get(int(label_id), f"UNKNOWN({label_id})")
             print(f"  {class_name:15s}: {count:6d} samples")
 
-        # 누락된 클래스 경고
         missing_classes = []
         for i, label_name in enumerate(LABELS):
             if i not in unique_labels:
                 missing_classes.append(label_name)
 
         if missing_classes:
-            print(f"\n⚠️  Missing classes in current data: {', '.join(missing_classes)}")
-            print("   (This is OK if you plan to add them later)")
+            print(f"\n  Missing classes: {', '.join(missing_classes)}")
 
     return X, y, feature_names
 
 
-def create_sliding_windows_grouped(X, y, window_size, group_size):
+def load_Xy_runs(folder_path: str, include_time: bool = False, n_workers=None, verbose=True,
+                 exclude_useless_features: bool = True, useless_features_json: str = "useless_features_all.json"):
     """
-    그룹 경계를 넘지 않는 슬라이딩 윈도우 생성.
-
-    split 후 데이터는 셔플된 그룹들의 flat 배열이므로,
-    그룹 내부에서만 윈도우를 만들어야 의미 있는 시계열이 됨.
-
-    Parameters:
-        X: (N, D) — N 타임스텝, D 피처
-        y: (N,) — 라벨
-        window_size: 윈도우 크기 (≤ group_size)
-        group_size: 그룹 크기 (data_split에서 사용한 값과 동일해야 함)
+    런(파일) 단위로 데이터 로드. 파일 경계를 보존.
 
     Returns:
-        X_win: (n_windows, window_size, D)
-        y_win: (n_windows,) — 각 윈도우 마지막 타임스텝의 라벨
+        X_runs: List[np.ndarray] - 각 파일(런)별 데이터
+        y_runs: List[np.ndarray] - 각 파일(런)별 라벨
+        run_names: List[str] - 파일명
+        feature_names: list
     """
-    N, D = X.shape
-    n_groups = N // group_size
-    X_trimmed = X[: n_groups * group_size].reshape(n_groups, group_size, D)
-    y_trimmed = y[: n_groups * group_size].reshape(n_groups, group_size)
+    file_list = [f for f in os.listdir(folder_path) if f.lower().endswith(".csv")]
+    file_list = [f for f in file_list if infer_label_id(f) is not None]
 
-    windows_per_group = group_size - window_size + 1
-    X_wins = []
-    y_wins = []
+    def sort_key(f):
+        return (infer_label_id(f), extract_number(f), f)
 
-    for g in range(n_groups):
-        for i in range(windows_per_group):
-            X_wins.append(X_trimmed[g, i : i + window_size, :])
-            y_wins.append(y_trimmed[g, i + window_size - 1])
+    file_list.sort(key=sort_key)
 
-    return np.array(X_wins, dtype=X.dtype), np.array(y_wins, dtype=y.dtype)
+    if n_workers is None:
+        n_workers = max(1, multiprocessing.cpu_count() - 1)
+
+    func_fixed = partial(load_one_csv, folder_path=folder_path, include_time=include_time)
+
+    with Pool(processes=n_workers) as pool:
+        results = list(pool.imap(func_fixed, file_list))
+
+    valid = [(r, fname) for r, fname in zip(results, file_list) if r is not None]
+    if len(valid) == 0:
+        raise RuntimeError("라벨과 매칭되는 CSV가 없습니다.")
+
+    feature_names = list(valid[0][0][0].columns)
+
+    X_runs, y_runs, run_names = [], [], []
+    for (df, y), fname in valid:
+        if list(df.columns) != feature_names:
+            raise ValueError("CSV 파일들 간 컬럼 구성이 다릅니다.")
+        X_runs.append(df.to_numpy(dtype=np.float32))
+        y_runs.append(y)
+        run_names.append(fname)
+
+    # 쓸모없는 변수 제거
+    if exclude_useless_features:
+        if os.path.exists(useless_features_json):
+            with open(useless_features_json, 'r') as f:
+                useless_data = json.load(f)
+            useless_list = useless_data.get("useless_features", [])
+
+            remove_indices = [i for i, name in enumerate(feature_names) if name in useless_list]
+            keep_indices = [i for i in range(len(feature_names)) if i not in remove_indices]
+
+            if verbose:
+                print(f"\nRemoving {len(remove_indices)} useless features")
+                print(f"   Features: {len(feature_names)} -> {len(keep_indices)}")
+
+            X_runs = [X[:, keep_indices] for X in X_runs]
+            feature_names = [feature_names[i] for i in keep_indices]
+        else:
+            if verbose:
+                print(f"\nUseless features JSON not found: {useless_features_json}")
+
+    if verbose:
+        print("\n[Data Class Distribution - Run-based]")
+        print(f"Total runs: {len(X_runs)}")
+        total_samples = sum(len(X) for X in X_runs)
+        print(f"Total samples: {total_samples}")
+
+        label_counts = {}
+        for y_r in y_runs:
+            label = int(y_r[0])
+            label_counts[label] = label_counts.get(label, 0) + len(y_r)
+
+        for lid in sorted(label_counts.keys()):
+            class_name = ID2LABEL.get(lid, f"UNKNOWN({lid})")
+            count = label_counts[lid]
+            print(f"  {class_name:15s}: {count:6d} samples ({sum(1 for yr in y_runs if int(yr[0]) == lid)} runs)")
+
+        missing_classes = []
+        for i, label_name in enumerate(LABELS):
+            if i not in label_counts:
+                missing_classes.append(label_name)
+        if missing_classes:
+            print(f"\n  Missing classes: {', '.join(missing_classes)}")
+
+    return X_runs, y_runs, run_names, feature_names
+
+
+def create_sliding_windows_from_runs(X_runs, y_runs, window_size, stride=1):
+    """
+    런 단위로 슬라이딩 윈도우 생성 (파일 경계 보존).
+    stride로 이동 간격 조절 가능.
+
+    Args:
+        X_runs: List[np.ndarray] - 각 (N_i, D)
+        y_runs: List[np.ndarray] - 각 (N_i,)
+        window_size: int
+        stride: int - 윈도우 이동 간격 (1=매 샘플, 2=1초 간격 if 0.5초 샘플링)
+
+    Returns:
+        X_windows: (총 윈도우 수, window_size, D)
+        y_windows: (총 윈도우 수,) - 마지막 타임스텝 라벨
+    """
+    all_X, all_y = [], []
+
+    for X_run, y_run in zip(X_runs, y_runs):
+        N = X_run.shape[0]
+        for i in range(0, N - window_size + 1, stride):
+            all_X.append(X_run[i : i + window_size])
+            all_y.append(y_run[i + window_size - 1])
+
+    if len(all_X) == 0:
+        raise ValueError("윈도우를 생성할 수 없습니다. 런 길이가 window_size보다 짧습니다.")
+
+    return np.array(all_X, dtype=np.float32), np.array(all_y, dtype=np.int64)
 
 
 if __name__ == "__main__":
-    folder = "data/data_new"  # 예시
+    folder = "data/data_new"
     X, y, feature_names = load_Xy(folder, include_time=False)
     print("[dataloader]")
-    print("X:", X.shape[1:])
-    print("y:", y.shape[1:], "labels:", np.unique(y))
+    print("X:", X.shape)
+    print("y:", y.shape, "labels:", np.unique(y))
     print("num_features:", len(feature_names))
-    print("first 20 feature names:", feature_names[:20])
-    print("first 20 samples X:\n", X[:20])
-    print("first 2 files y:\n", y[:120])
-    print("last 2 files y:\n", y[-120:])

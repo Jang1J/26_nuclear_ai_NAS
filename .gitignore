@@ -26,9 +26,15 @@ Thumbs.db
 data/
 models/*.keras
 models/*.npy
+models/*__scaler.pkl
+models/*__config.json
+models/*__class_mapping.npy
 train_results/
 test_results/
 *.log
+
+# Claude Code
+.claude/
 
 # SSH keys
 *.pub

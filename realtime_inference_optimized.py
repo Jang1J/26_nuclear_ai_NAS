@@ -24,11 +24,11 @@ class RealtimeDiagnosticSystemOptimized:
     - 샘플 index 기반 타이밍 → 정확한 제출 간격
     """
 
-    def __init__(self, model_path: str, window_size=10):
+    def __init__(self, model_path: str, window_size=3):
         """
         Args:
             model_path: 학습된 모델 경로
-            window_size: 시계열 윈도우 크기
+            window_size: 시계열 윈도우 크기 (3=3초 @1초 샘플링)
         """
         self.model = tf.keras.models.load_model(model_path)
         self.window_size = window_size
@@ -47,7 +47,7 @@ class RealtimeDiagnosticSystemOptimized:
         class_mapping_path = model_path.replace("__model.keras", "__class_mapping.npy")
         if Path(class_mapping_path).exists():
             self.available_classes = np.load(class_mapping_path)
-            self.missing_classes = [i for i in range(9) if i not in self.available_classes]
+            self.missing_classes = [i for i in range(len(LABELS)) if i not in self.available_classes]
         else:
             self.available_classes = None
             self.missing_classes = []
@@ -202,7 +202,7 @@ if __name__ == "__main__":
     # 진단 시스템 생성
     system = RealtimeDiagnosticSystemOptimized(
         model_path="models/cnn_attention_physics__model.keras",
-        window_size=10
+        window_size=3
     )
 
     # 진단 수행
