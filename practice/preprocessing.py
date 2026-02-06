@@ -87,14 +87,33 @@ class PreprocessingPipeline:
         if not self._is_fitted:
             raise RuntimeError("Pipeline not fitted. Call fit() or load() first.")
 
-        # 입력 피처 검증
+        # 입력 피처 검증 (Goal C: 유연한 검증 + 명확한 경고)
         if feature_names is not None:
-            if list(feature_names) != self.feature_names_in:
-                raise ValueError(
-                    f"Feature names mismatch!\n"
-                    f"Expected: {self.feature_names_in[:5]}...\n"
-                    f"Got: {list(feature_names)[:5]}..."
-                )
+            input_names = list(feature_names)
+            if input_names != self.feature_names_in:
+                # 수량만 다른지, 이름이 다른지 구분
+                expected_set = set(self.feature_names_in)
+                input_set = set(input_names)
+                missing = expected_set - input_set
+                extra = input_set - expected_set
+
+                if missing:
+                    import warnings
+                    warnings.warn(
+                        f"Feature names mismatch: {len(missing)} expected features missing.\n"
+                        f"Missing: {sorted(missing)[:5]}...\n"
+                        f"Expected {len(self.feature_names_in)}, got {len(input_names)}.\n"
+                        f"Proceeding with available features (may degrade accuracy)."
+                    )
+                elif extra and not missing:
+                    # 추가 피처만 있음 (이미 제거된 상태라면 OK)
+                    pass
+                else:
+                    raise ValueError(
+                        f"Feature names mismatch!\n"
+                        f"Expected: {self.feature_names_in[:5]}...\n"
+                        f"Got: {input_names[:5]}..."
+                    )
 
         # y가 없으면 더미 생성 (일부 feature_transformer가 y를 요구)
         if y is None:
@@ -118,12 +137,14 @@ class PreprocessingPipeline:
         self.fit(X, y, feature_names)
         return self.transform(X, y, feature_names)
 
-    def save(self, directory):
+    def save(self, directory, prefix=None):
         """
         전처리 파이프라인 저장
 
         Args:
-            directory: 저장 디렉토리 (예: "models/exp1/")
+            directory: 저장 디렉토리 (예: "models/")
+            prefix: 파일명 prefix (예: "cnn_attention__feat=physics__...")
+                    None이면 기존처럼 generic 이름 사용 (하위 호환성)
         """
         directory = Path(directory)
         directory.mkdir(parents=True, exist_ok=True)
@@ -131,12 +152,22 @@ class PreprocessingPipeline:
         if not self._is_fitted:
             raise RuntimeError("Cannot save unfitted pipeline")
 
+        # prefix가 있으면 모델별 격리 파일명, 없으면 기존 generic 이름
+        if prefix:
+            scaler_name = f"{prefix}__scaler.pkl"
+            feat_name = f"{prefix}__feature_transformer.pkl"
+            meta_name = f"{prefix}__preprocessing_metadata.json"
+        else:
+            scaler_name = "scaler.pkl"
+            feat_name = "feature_transformer.pkl"
+            meta_name = "preprocessing_metadata.json"
+
         # 1. Scaler 저장
-        scaler_path = directory / "scaler.pkl"
+        scaler_path = directory / scaler_name
         joblib.dump(self.scaler, scaler_path)
 
         # 2. Feature transformer 저장 (selection의 경우 중요)
-        feat_transformer_path = directory / "feature_transformer.pkl"
+        feat_transformer_path = directory / feat_name
         joblib.dump(self.feature_transformer, feat_transformer_path)
 
         # 3. 메타데이터 저장
@@ -146,7 +177,7 @@ class PreprocessingPipeline:
             "feature_names_in": self.feature_names_in,
             "feature_names_out": self.feature_names_out,
         }
-        metadata_path = directory / "preprocessing_metadata.json"
+        metadata_path = directory / meta_name
         with open(metadata_path, 'w') as f:
             json.dump(metadata, f, indent=2)
 
@@ -156,20 +187,44 @@ class PreprocessingPipeline:
         print(f"  - Metadata: {metadata_path}")
 
     @classmethod
-    def load(cls, directory):
+    def load(cls, directory, prefix=None):
         """
         전처리 파이프라인 로드
 
         Args:
-            directory: 로드 디렉토리 (예: "models/exp1/")
+            directory: 로드 디렉토리 (예: "models/")
+            prefix: 파일명 prefix (예: "cnn_attention__feat=physics__...")
+                    None이면 자동 탐색: prefix 파일 → generic 파일 순서로 시도
 
         Returns:
             pipeline: PreprocessingPipeline 객체
         """
         directory = Path(directory)
 
+        # prefix 결정 로직
+        if prefix:
+            metadata_path = directory / f"{prefix}__preprocessing_metadata.json"
+            scaler_path = directory / f"{prefix}__scaler.pkl"
+            feat_transformer_path = directory / f"{prefix}__feature_transformer.pkl"
+        else:
+            # 자동 탐색: prefix 파일이 있으면 사용, 없으면 generic
+            metadata_path = directory / "preprocessing_metadata.json"
+            scaler_path = directory / "scaler.pkl"
+            feat_transformer_path = directory / "feature_transformer.pkl"
+
+            # generic 파일이 없으면 prefix 파일 자동 탐색
+            if not metadata_path.exists():
+                candidates = sorted(directory.glob("*__preprocessing_metadata.json"))
+                if candidates:
+                    # 가장 최근 파일 사용
+                    meta_file = candidates[-1]
+                    found_prefix = meta_file.name.replace("__preprocessing_metadata.json", "")
+                    metadata_path = meta_file
+                    scaler_path = directory / f"{found_prefix}__scaler.pkl"
+                    feat_transformer_path = directory / f"{found_prefix}__feature_transformer.pkl"
+                    print(f"[Auto-detected pipeline prefix] {found_prefix}")
+
         # 1. 메타데이터 로드
-        metadata_path = directory / "preprocessing_metadata.json"
         with open(metadata_path, 'r') as f:
             metadata = json.load(f)
 
@@ -180,11 +235,9 @@ class PreprocessingPipeline:
         )
 
         # 3. Scaler 로드
-        scaler_path = directory / "scaler.pkl"
         pipeline.scaler = joblib.load(scaler_path)
 
         # 4. Feature transformer 로드
-        feat_transformer_path = directory / "feature_transformer.pkl"
         pipeline.feature_transformer = joblib.load(feat_transformer_path)
 
         # 5. 메타데이터 복원

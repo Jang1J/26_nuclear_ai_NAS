@@ -7,7 +7,10 @@
   3. train 런에서만 feature_method.fit → 모든 세트에 transform_runs
   4. train에서만 scaler.fit → 모든 세트에 transform
   5. 슬라이딩 윈도우 생성 (런 경계 보존, stride 설정 가능)
+  5.5. (옵션) 데이터 증강 적용
   6. 모델 학습/평가
+
+v2: 데이터 증강, 고급 LR 스케줄링, AdamW, Focal Loss, Label Smoothing 추가
 """
 import argparse
 import time
@@ -82,7 +85,121 @@ def parse_args():
     p.add_argument("--topk", type=int, default=300)
     p.add_argument("--stat_window", type=int, default=5)
 
+    # ── 데이터 증강 ──
+    p.add_argument("--use_augmentation", action="store_true",
+                    help="전체 클래스 데이터 증강 활성화")
+    p.add_argument("--jitter_std", type=float, default=0.01,
+                    help="Jitter 노이즈 표준편차 (신호 std 대비)")
+    p.add_argument("--scale_min", type=float, default=0.95,
+                    help="스케일링 최솟값")
+    p.add_argument("--scale_max", type=float, default=1.05,
+                    help="스케일링 최댓값")
+    p.add_argument("--mixup_alpha", type=float, default=0.0,
+                    help="Mixup alpha (0=비활성)")
+    p.add_argument("--augment_prob", type=float, default=0.5,
+                    help="증강 적용 확률")
+
+    # ── 소수 클래스 증강 ──
+    p.add_argument("--augment_minority", action="store_true",
+                    help="소수 클래스 오버샘플링 활성화")
+    p.add_argument("--minority_classes", type=int, nargs="+", default=[8],
+                    help="증강할 소수 클래스 ID (기본: 8=ESDE_out)")
+    p.add_argument("--minority_ratio", type=float, default=2.0,
+                    help="소수 클래스 증강 비율")
+
+    # ── 학습률 스케줄링 ──
+    p.add_argument("--lr_schedule", type=str, default=None,
+                    choices=[None, "cosine", "warmup_cosine"],
+                    help="학습률 스케줄 (None=ReduceLROnPlateau)")
+    p.add_argument("--warmup_ratio", type=float, default=0.1,
+                    help="Warmup 비율 (warmup_cosine만)")
+    p.add_argument("--lr_min_factor", type=float, default=0.01,
+                    help="최소 학습률 = lr × lr_min_factor")
+
+    # ── 옵티마이저 ──
+    p.add_argument("--use_adamw", action="store_true",
+                    help="AdamW 사용 (weight decay 정규화)")
+    p.add_argument("--weight_decay", type=float, default=1e-4,
+                    help="Weight decay 계수")
+
+    # ── 손실 함수 ──
+    p.add_argument("--use_focal_loss", action="store_true",
+                    help="Focal Loss 사용 (클래스 불균형 대응)")
+    p.add_argument("--focal_gamma", type=float, default=2.0,
+                    help="Focal Loss γ 파라미터")
+    p.add_argument("--label_smoothing", type=float, default=0.0,
+                    help="Label smoothing (0=비활성)")
+
+    # ── 콜백 ──
+    p.add_argument("--early_stopping_patience", type=int, default=15,
+                    help="EarlyStopping patience")
+
     return p.parse_args()
+
+
+# ═══════════════════════════════════════════════════════════
+# Focal Loss
+# ═══════════════════════════════════════════════════════════
+def focal_loss(gamma=2.0):
+    """
+    Focal Loss: 쉬운 샘플에 낮은 가중치, 어려운 샘플에 높은 가중치.
+    FL(p_t) = -(1 - p_t)^γ × log(p_t)
+    """
+    def loss_fn(y_true, y_pred):
+        y_true = tf.cast(tf.squeeze(y_true), tf.int32)
+        n_classes = tf.shape(y_pred)[-1]
+        y_true_oh = tf.one_hot(y_true, n_classes)
+
+        y_pred = tf.clip_by_value(y_pred, 1e-7, 1.0 - 1e-7)
+        p_t = tf.reduce_sum(y_true_oh * y_pred, axis=-1)
+        focal_weight = tf.pow(1.0 - p_t, gamma)
+        ce = -tf.math.log(p_t)
+
+        return tf.reduce_mean(focal_weight * ce)
+    return loss_fn
+
+
+# ═══════════════════════════════════════════════════════════
+# Warmup + Cosine LR Schedule
+# ═══════════════════════════════════════════════════════════
+import keras
+
+@keras.saving.register_keras_serializable(package="NAS")
+class WarmupCosineSchedule(tf.keras.optimizers.schedules.LearningRateSchedule):
+    """Warmup 후 Cosine Decay."""
+
+    def __init__(self, initial_lr, total_steps, warmup_steps, min_lr_factor=0.01):
+        super().__init__()
+        self.initial_lr = initial_lr
+        self.total_steps = total_steps
+        self.warmup_steps = warmup_steps
+        self.min_lr = initial_lr * min_lr_factor
+
+    def __call__(self, step):
+        step = tf.cast(step, tf.float32)
+        warmup_steps = tf.cast(self.warmup_steps, tf.float32)
+        total_steps = tf.cast(self.total_steps, tf.float32)
+
+        # Warmup 단계
+        warmup_lr = self.initial_lr * (step / tf.maximum(warmup_steps, 1.0))
+
+        # Cosine decay 단계
+        cos_step = step - warmup_steps
+        cos_total = total_steps - warmup_steps
+        cos_decay = 0.5 * (1.0 + tf.cos(
+            np.pi * tf.minimum(cos_step / tf.maximum(cos_total, 1.0), 1.0)
+        ))
+        cosine_lr = self.min_lr + (self.initial_lr - self.min_lr) * cos_decay
+
+        return tf.where(step < warmup_steps, warmup_lr, cosine_lr)
+
+    def get_config(self):
+        return {
+            "initial_lr": self.initial_lr,
+            "total_steps": self.total_steps,
+            "warmup_steps": self.warmup_steps,
+            "min_lr": self.min_lr,
+        }
 
 
 def _build_feature_engineer(args, model_dir: Path, train_dir: Path):
@@ -125,26 +242,67 @@ def _build_model_single(args, D, W=None):
     raise ValueError(f"Unknown model_type: {model_type}")
 
 
-def _compile_model(model, args):
-    model.compile(
-        optimizer=optimizers.Adam(learning_rate=args["lr"]),
-        loss=tf.keras.losses.SparseCategoricalCrossentropy(from_logits=False),
-        metrics=["accuracy"],
-    )
+def _compile_model(model, args, steps_per_epoch=None):
+    """모델 컴파일 (옵티마이저, 손실 함수 설정)."""
+
+    # ── 학습률 스케줄 ──
+    lr = args["lr"]
+    if args.get("lr_schedule") and steps_per_epoch:
+        total_steps = args["epochs"] * steps_per_epoch
+
+        if args["lr_schedule"] == "cosine":
+            lr = tf.keras.optimizers.schedules.CosineDecay(
+                initial_learning_rate=args["lr"],
+                decay_steps=total_steps,
+                alpha=args.get("lr_min_factor", 0.01),
+            )
+        elif args["lr_schedule"] == "warmup_cosine":
+            warmup_steps = int(total_steps * args.get("warmup_ratio", 0.1))
+            lr = WarmupCosineSchedule(
+                initial_lr=args["lr"],
+                total_steps=total_steps,
+                warmup_steps=warmup_steps,
+                min_lr_factor=args.get("lr_min_factor", 0.01),
+            )
+
+    # ── 옵티마이저 ──
+    if args.get("use_adamw"):
+        optimizer = optimizers.AdamW(
+            learning_rate=lr,
+            weight_decay=args.get("weight_decay", 1e-4),
+        )
+    else:
+        optimizer = optimizers.Adam(learning_rate=lr)
+
+    # ── 손실 함수 ──
+    if args.get("use_focal_loss"):
+        loss = focal_loss(gamma=args.get("focal_gamma", 2.0))
+    else:
+        loss = tf.keras.losses.SparseCategoricalCrossentropy(
+            from_logits=False,
+        )
+
+    model.compile(optimizer=optimizer, loss=loss, metrics=["accuracy"])
 
 
 def _fit_model(model, Xtr, ytr, Xva, yva, args, class_weight=None):
     cb = []
     monitor_metric = "val_loss" if (args["use_val"] and Xva is not None) else "loss"
-    cb.append(
-        callbacks.ReduceLROnPlateau(
-            monitor=monitor_metric, factor=0.5, patience=7, min_lr=1e-6, verbose=1,
+
+    # ReduceLROnPlateau: LR 스케줄이 없을 때만 사용
+    if not args.get("lr_schedule"):
+        cb.append(
+            callbacks.ReduceLROnPlateau(
+                monitor=monitor_metric, factor=0.5, patience=7, min_lr=1e-6, verbose=1,
+            )
         )
-    )
+
     if args["use_val"] and Xva is not None:
+        patience = args.get("early_stopping_patience", 15)
         cb.append(
             callbacks.EarlyStopping(
-                monitor="val_loss", patience=15, restore_best_weights=True, verbose=1,
+                monitor="val_loss", patience=patience,
+                restore_best_weights=True, verbose=1,
             )
         )
 
@@ -270,7 +428,42 @@ def run_single(args):
             Xva_m = np.vstack(val_X)
             yva = np.concatenate(val_y)
 
-    print_label_dist("\ntrain", ytr)
+    print_label_dist("\ntrain (before aug)", ytr)
+
+    # ──────────────────────────────────────────────
+    # 5.5) 데이터 증강 (학습 데이터에만 적용)
+    # ──────────────────────────────────────────────
+    if args.get("use_augmentation") and args.get("train"):
+        from .augmentation import TimeSeriesAugmenter, MinorityOversampler
+
+        n_before = len(ytr)
+
+        # 전체 클래스 증강
+        augmenter = TimeSeriesAugmenter(
+            jitter_std=args.get("jitter_std", 0.01),
+            scale_range=(args.get("scale_min", 0.95), args.get("scale_max", 1.05)),
+            mixup_alpha=args.get("mixup_alpha", 0.0),
+            augment_prob=args.get("augment_prob", 0.5),
+            seed=args["seed"],
+        )
+        Xtr_m, ytr = augmenter.augment(Xtr_m, ytr)
+        print(f"\n[Augmentation] Standard: {n_before} -> {len(ytr)} samples")
+
+        # 소수 클래스 오버샘플링
+        if args.get("augment_minority"):
+            n_before_min = len(ytr)
+            minority = MinorityOversampler(
+                target_classes=args.get("minority_classes", [8]),
+                target_ratio=args.get("minority_ratio", 2.0),
+                jitter_std=0.02,
+                scale_range=(0.90, 1.10),
+                seed=args["seed"],
+            )
+            Xtr_m, ytr = minority.oversample(Xtr_m, ytr)
+            print(f"[Augmentation] Minority: {n_before_min} -> {len(ytr)} samples")
+
+        print_label_dist("\ntrain (after aug)", ytr)
+
     if yva is not None:
         print_label_dist("val", yva)
     print_label_dist("test", yte)
@@ -294,7 +487,21 @@ def run_single(args):
 
     if args["train"]:
         print("\n[Mode] TRAIN")
-        _compile_model(model, args)
+
+        # steps_per_epoch 계산 (LR 스케줄용)
+        steps_per_epoch = int(np.ceil(len(ytr) / args["batch_size"]))
+        _compile_model(model, args, steps_per_epoch=steps_per_epoch)
+
+        # 학습 설정 로깅
+        if args.get("lr_schedule"):
+            print(f"  LR schedule: {args['lr_schedule']}")
+        if args.get("use_adamw"):
+            print(f"  Optimizer: AdamW (wd={args.get('weight_decay', 1e-4)})")
+        if args.get("use_focal_loss"):
+            print(f"  Loss: Focal Loss (γ={args.get('focal_gamma', 2.0)})")
+        if args.get("label_smoothing", 0) > 0:
+            print(f"  Label smoothing: {args['label_smoothing']}")
+
         history, train_time = _fit_model(model, Xtr_m, ytr, Xva_m, yva, args, class_weight=class_weight)
         print(f"\n[Training time] {train_time:.1f}s")
 
@@ -314,13 +521,13 @@ def run_single(args):
         pipeline.feature_names_in = feature_names
         pipeline.feature_names_out = feat_names
         pipeline._is_fitted = True
-        pipeline.save(model_dir)
+        pipeline.save(model_dir, prefix=run_name)
 
         # 개별 파일도 저장 (하위 호환성)
         scaler_path = model_dir / f"{run_name}__scaler.pkl"
         joblib.dump(scaler, scaler_path)
 
-        # Config 저장
+        # Config 저장 (모든 하이퍼파라미터 포함)
         config = {
             "model_type": args["model_type"],
             "feature_method": args["feature_method"],
@@ -335,6 +542,16 @@ def run_single(args):
             "data_folder": args["data_folder"],
             "topk": args.get("topk", 300),
             "stat_window": args.get("stat_window", 5),
+            # v2 추가 설정
+            "use_augmentation": args.get("use_augmentation", False),
+            "augment_minority": args.get("augment_minority", False),
+            "lr_schedule": args.get("lr_schedule"),
+            "use_adamw": args.get("use_adamw", False),
+            "weight_decay": args.get("weight_decay", 1e-4),
+            "use_focal_loss": args.get("use_focal_loss", False),
+            "focal_gamma": args.get("focal_gamma", 2.0),
+            "label_smoothing": args.get("label_smoothing", 0.0),
+            "early_stopping_patience": args.get("early_stopping_patience", 15),
         }
         config_path = model_dir / f"{run_name}__config.json"
         with open(config_path, 'w') as f:
@@ -390,6 +607,7 @@ def run_single(args):
     print(f"  loss: {test_loss:.6f}")
     print(f"  acc : {test_acc:.6f}")
     print(f"  inference: {infer_time:.3f}s total, {per_sample_ms:.4f}ms/sample")
+    print(f"\n{classification_report(yte, y_pred, labels=unique_classes, target_names=target_names)}")
 
     # 10) 시각화
     cm_path = test_dir / "confusion_matrix.png"

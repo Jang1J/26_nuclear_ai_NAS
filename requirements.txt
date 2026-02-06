@@ -1,0 +1,27 @@
+# 원전 사고 진단 AI 시스템 - 의존 패키지
+# conda create -n team_6 python=3.11
+# conda activate team_6
+# pip install -r requirements.txt
+
+# 딥러닝
+tensorflow>=2.16,<3.0
+keras>=3.0
+
+# 데이터 처리
+numpy>=1.26,<2.0
+pandas>=2.0
+scipy>=1.11
+
+# 전처리 & 피처 엔지니어링
+scikit-learn>=1.3
+joblib>=1.3
+
+# XAI (모델 해석성)
+shap>=0.45,<0.50           # numpy<2 호환 필요
+
+# 시각화
+matplotlib>=3.7
+seaborn>=0.12
+
+# 피처 선택 (selection method)
+lightgbm>=4.0

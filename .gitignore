@@ -22,22 +22,40 @@ build/
 .DS_Store
 Thumbs.db
 
-# Project specific
+# ──────────────────────────────
+# 프로젝트 데이터 & 결과물
+# ──────────────────────────────
+
+# 데이터 (용량 큼)
 data/
+
+# 학습된 모델 & 파이프라인
 models/*.keras
 models/*.npy
-models/*__scaler.pkl
-models/*__config.json
-models/*__class_mapping.npy
+models/*.pkl
+models/*.json
+
+# 학습/테스트 결과
 train_results/
 test_results/
+
+# XAI 분석 결과
+xai_results/
+
+# 로그
 *.log
+
+# ──────────────────────────────
+# 보안 & 기타
+# ──────────────────────────────
 
 # Claude Code
 .claude/
 
 # SSH keys
 *.pub
+
+# Eval
 eval*
 
 # Temporary

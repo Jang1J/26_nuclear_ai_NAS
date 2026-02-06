@@ -30,18 +30,32 @@ class RealtimeDiagnosticSystemOptimized:
             model_path: 학습된 모델 경로
             window_size: 시계열 윈도우 크기 (3=3초 @1초 샘플링)
         """
-        self.model = tf.keras.models.load_model(model_path)
+        # 커스텀 객체 등록 (WarmupCosineSchedule 등)
+        try:
+            from practice.main import WarmupCosineSchedule  # noqa: F401
+        except Exception:
+            pass
+
+        try:
+            self.model = tf.keras.models.load_model(model_path)
+        except Exception:
+            self.model = tf.keras.models.load_model(model_path, compile=False)
+
         self.window_size = window_size
         self.diagnosed_class = None
 
-        # 3초 우승 전략
-        self.confidence_threshold = 0.70
-        self.early_detection_threshold = 0.85
+        # Goal D: 연속 합의 기반 확정 파라미터
+        self._consecutive_class = None
+        self._consecutive_count = 0
+        self._prob_history = []
         self.min_samples = 5
 
-        # 전처리 파이프라인 로드
+        # 모델 경로에서 prefix 자동 추출 (Goal A: 파이프라인 격리)
         model_dir = Path(model_path).parent
-        self.preprocessing = PreprocessingPipeline.load(model_dir)
+        model_filename = Path(model_path).stem
+        prefix = model_filename.replace("__model", "") if "__model" in model_filename else None
+
+        self.preprocessing = PreprocessingPipeline.load(model_dir, prefix=prefix)
 
         # 클래스 매핑 로드
         class_mapping_path = model_path.replace("__model.keras", "__class_mapping.npy")
@@ -162,21 +176,44 @@ class RealtimeDiagnosticSystemOptimized:
         predicted_class = np.argmax(avg_prob)
         confidence = float(avg_prob[predicted_class])
 
-        # 진단 확정 조건
+        # Goal D: 연속 합의 + 마진 기반 확정 로직
         diagnosed = False
         sample_count = current_idx
 
+        # 1등-2등 확률 차이 (마진)
+        sorted_probs = sorted(avg_prob, reverse=True)
+        margin = sorted_probs[0] - sorted_probs[1] if len(sorted_probs) > 1 else sorted_probs[0]
+
+        # 연속 카운트 갱신
+        if predicted_class == self._consecutive_class:
+            self._consecutive_count += 1
+        else:
+            self._consecutive_class = predicted_class
+            self._consecutive_count = 1
+            self._prob_history = []
+
+        self._prob_history.append(confidence)
+
         if sample_count < self.min_samples:
             pass
-        elif confidence >= self.early_detection_threshold:
+        # Tier 1: 매우 높은 확신 + 연속 2회
+        elif confidence >= 0.90 and self._consecutive_count >= 2 and margin >= 0.3:
             diagnosed = True
             self.diagnosed_class = predicted_class
-        elif confidence >= self.confidence_threshold and sample_count >= 20:
+        # Tier 2: 높은 확신 + 연속 3회
+        elif confidence >= 0.70 and self._consecutive_count >= 3 and margin >= 0.15:
             diagnosed = True
             self.diagnosed_class = predicted_class
-        elif elapsed_time >= 55.0 and predicted_class == 0:
+        # Tier 3: 보통 확신 + 연속 5회
+        elif confidence >= 0.50 and self._consecutive_count >= 5:
+            avg_conf = np.mean(self._prob_history[-5:])
+            if avg_conf >= 0.55:
+                diagnosed = True
+                self.diagnosed_class = predicted_class
+        # Tier 4: 시간 초과 대비
+        elif elapsed_time >= 55.0 and confidence >= 0.40:
             diagnosed = True
-            self.diagnosed_class = 0
+            self.diagnosed_class = predicted_class
 
         return {
             "diagnosed": diagnosed,

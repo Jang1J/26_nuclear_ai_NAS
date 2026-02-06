@@ -34,12 +34,26 @@ class CompetitionSystem:
 
     def __init__(self, model_path: str, window_size=3,
                  useless_features_json: str = "useless_features_all.json"):
-        self.model = tf.keras.models.load_model(model_path)
+        # 커스텀 객체 등록 (WarmupCosineSchedule 등)
+        try:
+            from practice.main import WarmupCosineSchedule  # noqa: F401
+        except Exception:
+            pass
+
+        try:
+            self.model = tf.keras.models.load_model(model_path)
+        except Exception:
+            self.model = tf.keras.models.load_model(model_path, compile=False)
+
         self.window_size = window_size
 
-        # 전처리 파이프라인 로드
+        # 모델 경로에서 prefix 자동 추출 (Goal A: 파이프라인 격리)
         model_dir = Path(model_path).parent
-        self.preprocessing = PreprocessingPipeline.load(model_dir)
+        model_filename = Path(model_path).stem  # "xxx__model" → prefix = "xxx"
+        prefix = model_filename.replace("__model", "") if "__model" in model_filename else None
+
+        # prefix 기반으로 올바른 파이프라인 로드
+        self.preprocessing = PreprocessingPipeline.load(model_dir, prefix=prefix)
 
         # useless features 목록 로드
         self._useless_features = set()
@@ -65,20 +79,46 @@ class CompetitionSystem:
     def set_feature_names(self, all_feature_names):
         """
         원본 데이터의 전체 컬럼명을 설정.
-        학습 시 제거된 useless features의 인덱스를 자동 계산.
+        학습 시 사용된 피처와 매칭하여 인덱스 + 순서 보장.
+
+        Goal C 강화:
+        - 순서 보장: 파이프라인이 기대하는 피처 순서대로 재배열
+        - 누락 감지: 학습에 사용된 피처가 입력에 없으면 경고
+        - 추가 피처 무시: 입력에만 있는 피처는 자동 제거
 
         Args:
             all_feature_names: list — 원본 CSV의 전체 컬럼명 (KCNTOMS 제외 후)
         """
-        expected_names = set(self.preprocessing.feature_names_in)
-        self._keep_indices = [
-            i for i, name in enumerate(all_feature_names)
-            if name in expected_names
-        ]
+        expected_names = self.preprocessing.feature_names_in
+        input_name_to_idx = {name: i for i, name in enumerate(all_feature_names)}
+
+        # 파이프라인이 기대하는 순서대로 인덱스 매핑
+        self._keep_indices = []
+        self._reorder_indices = []
+        missing_features = []
+
+        for expected_name in expected_names:
+            if expected_name in input_name_to_idx:
+                self._keep_indices.append(input_name_to_idx[expected_name])
+            else:
+                missing_features.append(expected_name)
+
         n_removed = len(all_feature_names) - len(self._keep_indices)
-        if n_removed > 0:
-            print(f"[CompetitionSystem] Removing {n_removed} useless features "
-                  f"({len(all_feature_names)} -> {len(self._keep_indices)})")
+        n_matched = len(self._keep_indices)
+
+        print(f"[CompetitionSystem] Feature mapping: "
+              f"{len(all_feature_names)} input → {n_matched} matched "
+              f"({n_removed} removed)")
+
+        if missing_features:
+            print(f"  ⚠️ WARNING: {len(missing_features)} expected features missing!")
+            print(f"     Missing: {missing_features[:10]}{'...' if len(missing_features) > 10 else ''}")
+            print(f"     Model may produce degraded predictions.")
+
+        if n_matched == 0:
+            raise ValueError(
+                "No matching features found! Check if the data source matches training data."
+            )
 
     def reset(self):
         """새 시나리오 시작 시 호출."""
@@ -87,6 +127,11 @@ class CompetitionSystem:
         self.diagnosed_time = None    # 사고 진단 확정 시간
         self.diagnosed_class = None   # 확정된 사고 클래스명
         self._last_probs = [0.0] * len(LABELS)
+
+        # Goal D: 연속 합의 기반 확정 로직
+        self._consecutive_class = None  # 연속으로 예측된 클래스
+        self._consecutive_count = 0     # 연속 횟수
+        self._prob_history = []         # 최근 확률 이력 (마진 계산용)
 
     def receive_and_predict(self, row_data):
         """
@@ -155,17 +200,57 @@ class CompetitionSystem:
                 'Class probabilities': probs,
             }
 
-        # NORMAL이면 그냥 NORMAL 반환 (사고 아직 안 옴)
+        # NORMAL이면 연속 카운트 리셋 후 NORMAL 반환
         if predicted_class == LABEL2ID["NORMAL"]:
+            self._consecutive_class = None
+            self._consecutive_count = 0
+            self._prob_history = []
             return {
                 'results': 'NORMAL',
                 'Diagnostic_time': None,
                 'Class probabilities': probs,
             }
 
-        # 사고 감지! → 확신도에 따라 확정 여부 결정
-        if confidence >= 0.70:
-            # 확정
+        # ────────────────────────────────────────────
+        # Goal D: 연속 합의 + 마진 기반 확정 로직
+        # ────────────────────────────────────────────
+        # 1등-2등 확률 차이 (마진)
+        sorted_probs = sorted(y_prob, reverse=True)
+        margin = sorted_probs[0] - sorted_probs[1] if len(sorted_probs) > 1 else sorted_probs[0]
+
+        # 연속 카운트 갱신
+        if predicted_class == self._consecutive_class:
+            self._consecutive_count += 1
+        else:
+            self._consecutive_class = predicted_class
+            self._consecutive_count = 1
+            self._prob_history = []
+
+        self._prob_history.append(confidence)
+
+        # 확정 조건 (3단계 트리거)
+        diagnosed = False
+
+        # Tier 1: 매우 높은 확신 + 연속 2회 → 즉시 확정 (빠른 진단)
+        if confidence >= 0.90 and self._consecutive_count >= 2 and margin >= 0.3:
+            diagnosed = True
+
+        # Tier 2: 높은 확신 + 연속 3회 → 확정 (안정적 진단)
+        elif confidence >= 0.70 and self._consecutive_count >= 3 and margin >= 0.15:
+            diagnosed = True
+
+        # Tier 3: 보통 확신 + 연속 5회 → 확정 (보수적 진단)
+        elif confidence >= 0.50 and self._consecutive_count >= 5:
+            # 최근 5회 평균 확신도도 체크
+            avg_conf = np.mean(self._prob_history[-5:])
+            if avg_conf >= 0.55:
+                diagnosed = True
+
+        # Tier 4: 시간 초과 대비 (55초 이상 경과 시 최선의 판단)
+        elif elapsed >= 55.0 and confidence >= 0.40:
+            diagnosed = True
+
+        if diagnosed:
             self.diagnosed_class = predicted_name
             self.diagnosed_time = elapsed
             return {
@@ -174,7 +259,7 @@ class CompetitionSystem:
                 'Class probabilities': probs,
             }
         else:
-            # 사고 같지만 아직 확신 부족 → 클래스명은 보여주되 확정은 안 함
+            # 사고 감지했지만 아직 확정 불충분 → 클래스명은 보여줌
             return {
                 'results': predicted_name,
                 'Diagnostic_time': None,
