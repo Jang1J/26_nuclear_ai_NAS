@@ -18,16 +18,17 @@ from practice.dataloader import load_Xy, LABELS, ID2LABEL
 class RealtimeDiagnosticSystem:
     """실시간 진단 시스템"""
 
-    def __init__(self, model_path: str, feature_method="all", window_size=None, class_mapping_path=None):
+    def __init__(self, model_path: str, feature_method=None, window_size=None, class_mapping_path=None):
         """
         Args:
             model_path: 학습된 모델 경로
-            feature_method: 피처 추출 방법
+            feature_method: (Deprecated) 피처 추출 방법 - 자동으로 로드됨
             window_size: 시계열 모델용 윈도우 크기
             class_mapping_path: 학습에 사용된 클래스 매핑 파일 경로
         """
+        from practice.preprocessing import PreprocessingPipeline
+
         self.model = tf.keras.models.load_model(model_path)
-        self.feature_method = feature_method
         self.window_size = window_size
         self.diagnosed_class = None
         # 3초 우승 목표: 낮은 threshold + 조기 감지 전략
@@ -35,6 +36,37 @@ class RealtimeDiagnosticSystem:
         self.early_detection_threshold = 0.85  # 85% 이상이면 즉시 확정
         self.min_samples = 5  # 최소 샘플 수 (너무 적으면 오탐)
         self.start_time = None
+
+        # 전처리 파이프라인 로드 (GPT 제안 1번: 학습=추론 100% 일치!)
+        model_dir = Path(model_path).parent
+        try:
+            self.preprocessing = PreprocessingPipeline.load(model_dir)
+            print(f"✅ [Preprocessing pipeline loaded] 학습=추론 100% 일치 보장!")
+        except Exception as e:
+            print(f"⚠️ [Warning] PreprocessingPipeline 로드 실패: {e}")
+            print("   하위 호환성 모드로 전환 중...")
+
+            # 하위 호환: 개별 파일 로드
+            import joblib
+            from practice.feature_method import make_feature_method
+
+            scaler_path = model_path.replace("__model.keras", "__scaler.pkl")
+            if Path(scaler_path).exists():
+                self.scaler = joblib.load(scaler_path)
+                print(f"[Loaded scaler (legacy)] {scaler_path}")
+            else:
+                raise FileNotFoundError(f"Scaler not found: {scaler_path}")
+
+            if feature_method == "selection":
+                selector_path = model_dir / "feature_selector_lgbm.pkl"
+                if selector_path.exists():
+                    self.feature_method = make_feature_method("selection", model_path=str(selector_path), save_model=False)
+                else:
+                    raise FileNotFoundError(f"Selector not found: {selector_path}")
+            else:
+                self.feature_method = make_feature_method(feature_method or "all")
+
+            self.preprocessing = None  # 레거시 모드
 
         # 학습에 사용된 클래스 로드
         self.available_classes = None
@@ -59,22 +91,28 @@ class RealtimeDiagnosticSystem:
                 print(f"[Missing classes] {[ID2LABEL[c] for c in self.missing_classes]}")
 
     def preprocess_data(self, X, y=None, feature_names=None):
-        """데이터 전처리"""
-        from practice.feature_method import make_feature_method
+        """
+        데이터 전처리 (학습과 100% 동일한 파이프라인)
 
-        # feature_names가 없으면 기본 생성 (300개 피처 가정)
+        CRITICAL: fit_transform이 아닌 transform만 사용!
+        """
+        # feature_names가 없으면 기본 생성
         if feature_names is None:
             feature_names = [f"feature_{i}" for i in range(X.shape[1])]
 
-        # 피처 엔지니어링
-        feat = make_feature_method(self.feature_method)
-        y_temp = y if y is not None else np.zeros(len(X), dtype=np.int64)
-        X_processed, y_processed, _ = feat.fit_transform(X, y_temp, feature_names)
+        # PreprocessingPipeline 사용 (GPT 제안 1번)
+        if self.preprocessing is not None:
+            X_processed = self.preprocessing.transform(X, y, feature_names)
+        else:
+            # 레거시 모드
+            y_temp = y if y is not None else np.zeros(len(X), dtype=np.int64)
+            X_processed, y_processed, _ = self.feature_method.transform(X, y_temp, feature_names)
+            X_processed = self.scaler.transform(X_processed)
 
         # 시계열 모델용 윈도우 처리
         if self.window_size:
             from practice.dataloader import create_sliding_windows_grouped
-
+            y_processed = y if y is not None else np.zeros(len(X), dtype=np.int64)
             X_processed, y_processed = create_sliding_windows_grouped(
                 X_processed, y_processed, self.window_size, group_size=10
             )
@@ -116,24 +154,18 @@ class RealtimeDiagnosticSystem:
 
         # 평균 확률 (시계열 모델의 경우 여러 윈도우의 평균)
         avg_prob = np.mean(y_prob, axis=0)
+
+        # 누락된 클래스 마스킹 (GPT 제안: 처음부터 확률을 0으로 만들어 argmax에서 제외)
+        if self.missing_classes:
+            avg_prob[self.missing_classes] = 0.0
+
+        # 확률 재정규화 (합이 1이 되도록)
+        prob_sum = np.sum(avg_prob)
+        if prob_sum > 0:
+            avg_prob = avg_prob / prob_sum
+
         predicted_class = np.argmax(avg_prob)
         confidence = float(avg_prob[predicted_class])
-
-        # 누락된 클래스 예측 시 처리
-        if predicted_class in self.missing_classes:
-            # 학습되지 않은 클래스 예측 → 가장 유사한 학습된 클래스로 재매핑
-            # LOCA_HL(1) → LOCA_CL(2), LOCA_RCPCSEAL(3) → LOCA_CL(2)
-            # SGTR_SG2(5) → SGTR_SG1(4), SGTR_SG3(6) → SGTR_SG1(4)
-            class_mapping = {
-                1: 2,  # LOCA_HL → LOCA_CL
-                3: 2,  # LOCA_RCPCSEAL → LOCA_CL
-                5: 4,  # SGTR_SG2 → SGTR_SG1
-                6: 4,  # SGTR_SG3 → SGTR_SG1
-            }
-            original_class = predicted_class
-            predicted_class = class_mapping.get(predicted_class, predicted_class)
-            confidence = float(avg_prob[predicted_class])  # 재매핑된 클래스의 확률 사용
-            print(f"[Warning] Missing class {ID2LABEL[original_class]} predicted → remapped to {ID2LABEL[predicted_class]}")
 
         # 진단 확정 조건 (3초 우승 전략)
         diagnosed = False

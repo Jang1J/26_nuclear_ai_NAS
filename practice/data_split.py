@@ -66,7 +66,7 @@ class SplitWithVal:
         Xva = scaler.transform(Xva)
         Xte = scaler.transform(Xte)
 
-        return Xtr, ytr, Xva, yva, Xte, yte
+        return Xtr, ytr, Xva, yva, Xte, yte, scaler
 
 
 class SplitWithoutVal:
@@ -110,4 +110,4 @@ class SplitWithoutVal:
         Xtr = scaler.fit_transform(Xtr)
         Xte = scaler.transform(Xte)
 
-        return Xtr, ytr, Xte, yte
+        return Xtr, ytr, Xte, yte, scaler

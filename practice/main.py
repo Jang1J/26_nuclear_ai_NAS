@@ -11,6 +11,7 @@ from sklearn.metrics import classification_report
 from .dataloader import load_Xy, create_sliding_windows_grouped, LABELS, ID2LABEL
 from .feature_method import make_feature_method
 from .data_split import SplitWithVal, SplitWithoutVal, compute_class_weight
+from .preprocessing import PreprocessingPipeline
 from .model import (
     build_mlp,
     build_cnn,
@@ -73,7 +74,6 @@ def parse_args():
     # selection / stats 옵션
     p.add_argument("--topk", type=int, default=300)
     p.add_argument("--stat_window", type=int, default=5)
-
 
     return p.parse_args()
 
@@ -204,7 +204,7 @@ def run_single(args):
     per_class_path = test_dir / "per_class_accuracy.png"
     metrics_path = test_dir / "test_metrics.txt"
 
-    # 1) 데이터 로드
+    # 1) 데이터 로드 (쓸모없는 변수는 기본적으로 제거됨)
     X, y, feature_names = load_Xy(args["data_folder"], include_time=False)
     print("[Data]")
     print("X:", X.shape, "y:", y.shape)
@@ -220,13 +220,13 @@ def run_single(args):
     # 3) 데이터 분할
     if args["use_val"]:
         splitter = SplitWithVal(group_size=args["group_size"], val_ratio=0.1, test_ratio=0.2, seed=args["seed"])
-        Xtr, ytr, Xva, yva, Xte, yte = splitter.split(X2, y2)
+        Xtr, ytr, Xva, yva, Xte, yte, scaler = splitter.split(X2, y2)
         print_label_dist("\ntrain", ytr)
         print_label_dist("val", yva)
         print_label_dist("test", yte)
     else:
         splitter = SplitWithoutVal(group_size=args["group_size"], test_ratio=0.2, seed=args["seed"])
-        Xtr, ytr, Xte, yte = splitter.split(X2, y2)
+        Xtr, ytr, Xte, yte, scaler = splitter.split(X2, y2)
         Xva, yva = None, None
         print_label_dist("\ntrain", ytr)
         print_label_dist("test", yte)
@@ -275,6 +275,50 @@ def run_single(args):
 
         model.save(model_path)
         print("[Saved model]", model_path)
+
+        # 전처리 파이프라인 저장 (GPT 제안 1번: 학습=추론 100% 일치)
+        import joblib
+        import json
+
+        # PreprocessingPipeline로 재구성하여 저장
+        pipeline = PreprocessingPipeline(
+            feature_method=args["feature_method"],
+            **{k: args[k] for k in ["topk", "stat_window"] if k in args}
+        )
+        # 이미 fit된 객체들을 파이프라인에 넣기
+        pipeline.feature_transformer = feat
+        pipeline.scaler = scaler
+        pipeline.feature_names_in = feature_names
+        pipeline.feature_names_out = feats2
+        pipeline._is_fitted = True
+
+        pipeline.save(model_dir)
+
+        # 하위 호환성을 위해 개별 파일도 저장
+        scaler_path = model_dir / f"{run_name}__scaler.pkl"
+        joblib.dump(scaler, scaler_path)
+        print(f"[Saved scaler (legacy)] {scaler_path}")
+
+        # Config 저장 (GPT 제안 7번: 실험 재현성)
+        config = {
+            "model_type": args["model_type"],
+            "feature_method": args["feature_method"],
+            "group_size": args["group_size"],
+            "window_size": args.get("window_size", 10),
+            "epochs": args["epochs"],
+            "batch_size": args["batch_size"],
+            "lr": args["lr"],
+            "seed": args["seed"],
+            "use_val": args["use_val"],
+            "use_class_weight": args["use_class_weight"],
+            "data_folder": args["data_folder"],
+            "topk": args.get("topk", 300),
+            "stat_window": args.get("stat_window", 5),
+        }
+        config_path = model_dir / f"{run_name}__config.json"
+        with open(config_path, 'w') as f:
+            json.dump(config, f, indent=2)
+        print(f"[Saved config] {config_path}")
 
         # 학습에 사용된 클래스 정보 저장
         available_classes = np.unique(ytr)

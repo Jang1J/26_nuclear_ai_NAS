@@ -1,0 +1,332 @@
+{
+  "useless_features": [
+    "BFV605",
+    "BHV101",
+    "BHV102",
+    "BHV105",
+    "BHV18",
+    "BHV301",
+    "BHV313",
+    "BHV314",
+    "BHV315",
+    "BHV39",
+    "BHV40",
+    "BHV50",
+    "BHV603",
+    "BKFBYP",
+    "BKFCNT",
+    "BSGBD",
+    "CHCTMT",
+    "CRADHI",
+    "CRXTRIP",
+    "CUCTMT",
+    "CWSGRL",
+    "CZSGLS",
+    "CZSGW",
+    "DEC100",
+    "DECYA",
+    "DECYT",
+    "DELTAT",
+    "DFFSGL",
+    "ECVAG",
+    "EPRTLI",
+    "FAFWP1",
+    "FAFWP2",
+    "FAFWP3",
+    "FKAFWPI",
+    "HCSRWST",
+    "HCSSUMP",
+    "HUCTMT",
+    "K3J15",
+    "KCISOB",
+    "KELC1R",
+    "KELD1L",
+    "KFV610",
+    "KFV613",
+    "KFWBYP",
+    "KFWCNT",
+    "KLAMPO273",
+    "KLAMPO280",
+    "KLAMPO281",
+    "KLAMPO288",
+    "KLOVS",
+    "KMANFW",
+    "KPHON",
+    "KRCP1",
+    "KRCP2",
+    "KRCP3",
+    "KSWO126",
+    "KSWO127",
+    "KSWO279",
+    "KSWO280",
+    "KSWO3",
+    "KSWO320",
+    "KTLOVS",
+    "KV243",
+    "PACCTK",
+    "PAFWP",
+    "PMSS",
+    "PPRTDB",
+    "PPRTI",
+    "PPRZCI",
+    "QPRTDB",
+    "RKFWBYP",
+    "RKFWCNT",
+    "USISH",
+    "VPRTGI",
+    "VPRTT",
+    "WACCA",
+    "WACCB",
+    "WAFW12",
+    "WAFW23",
+    "WAFWS1",
+    "WAFWS2",
+    "WAFWS3",
+    "WAFWTB",
+    "WBHFWP",
+    "WCSSUMP",
+    "WKAFWT",
+    "WKMXFWP",
+    "WRCPSI1",
+    "WRCPSI2",
+    "WRCPSI3",
+    "WRCPSR1",
+    "WRCPSR2",
+    "WRCPSR3",
+    "WRHRA",
+    "WRHRB",
+    "WRHRCL1",
+    "WRHRCL2",
+    "WRHRCL3",
+    "WRHRCS",
+    "WRHRSMP",
+    "WSGLD",
+    "WSGLEAK",
+    "WSISH1",
+    "WSISH2",
+    "WSPRAY",
+    "WSPRCS1",
+    "WSPRCS2",
+    "WSWP",
+    "WTKAFW",
+    "XPRTBL",
+    "YPRTA",
+    "YPRTC",
+    "ZINST23",
+    "ZINST47",
+    "ZINST66",
+    "ZINST98",
+    "ZRWST",
+    "ZSGIN1",
+    "ZSGIN2",
+    "ZSGIN3",
+    "ZSGIW"
+  ],
+  "important_features": [
+    {
+      "name": "PAFWPT",
+      "score": 7406082000000.0
+    },
+    {
+      "name": "QPRZB",
+      "score": 707363937500.0
+    },
+    {
+      "name": "DCTMT",
+      "score": 19569345703.125
+    },
+    {
+      "name": "VSUMP",
+      "score": 10277747070.3125
+    },
+    {
+      "name": "KTSIS",
+      "score": 580164245.6054688
+    },
+    {
+      "name": "WCSLOC",
+      "score": 416463165.2832031
+    },
+    {
+      "name": "VNET",
+      "score": 149444442.74902344
+    },
+    {
+      "name": "WHV22",
+      "score": 26211500.16784668
+    },
+    {
+      "name": "WAFWT",
+      "score": 17509292.602539062
+    },
+    {
+      "name": "FTURB",
+      "score": 15109497.0703125
+    },
+    {
+      "name": "WSISC1",
+      "score": 8737158.77532959
+    },
+    {
+      "name": "WSISC2",
+      "score": 8737158.77532959
+    },
+    {
+      "name": "WSISC3",
+      "score": 8737158.77532959
+    },
+    {
+      "name": "WAFWP1",
+      "score": 7253498.077392578
+    },
+    {
+      "name": "WAFWP3",
+      "score": 7253498.077392578
+    },
+    {
+      "name": "WAFW2",
+      "score": 7122424.125671387
+    },
+    {
+      "name": "WAFW3",
+      "score": 6083737.373352051
+    },
+    {
+      "name": "WAFW1",
+      "score": 4303131.103515625
+    },
+    {
+      "name": "YCVRAD",
+      "score": 3711103.1127775726
+    },
+    {
+      "name": "WAFWP2",
+      "score": 2909917.8314208984
+    },
+    {
+      "name": "DRADRE",
+      "score": 724054.217338562
+    },
+    {
+      "name": "KRXTRIP",
+      "score": 675555.5272102356
+    },
+    {
+      "name": "KTBTRIP",
+      "score": 672525.2270698547
+    },
+    {
+      "name": "KCISOA",
+      "score": 594949.48387146
+    },
+    {
+      "name": "KLAMPO4",
+      "score": 594949.48387146
+    },
+    {
+      "name": "KLAMPO6",
+      "score": 594949.48387146
+    },
+    {
+      "name": "KSAFEI",
+      "score": 594949.48387146
+    },
+    {
+      "name": "KFWISO",
+      "score": 594949.48387146
+    },
+    {
+      "name": "KAFWP1",
+      "score": 591919.1837310791
+    },
+    {
+      "name": "KAFWP3",
+      "score": 591919.1837310791
+    },
+    {
+      "name": "KFWP1",
+      "score": 591919.1837310791
+    },
+    {
+      "name": "KFWP2",
+      "score": 591919.1837310791
+    },
+    {
+      "name": "KFWP3",
+      "score": 591919.1837310791
+    },
+    {
+      "name": "KFWTRIP",
+      "score": 591919.1837310791
+    },
+    {
+      "name": "BHV22",
+      "score": 567025.2442359924
+    },
+    {
+      "name": "WCSRWST",
+      "score": 459375.5304813385
+    },
+    {
+      "name": "KGENB",
+      "score": 360202.01444625854
+    },
+    {
+      "name": "KLAMPO282",
+      "score": 317777.7826786041
+    },
+    {
+      "name": "KAFWP2",
+      "score": 163232.32650756836
+    },
+    {
+      "name": "KLAMPO277",
+      "score": 154949.50115680695
+    },
+    {
+      "name": "ZINST17",
+      "score": 79030.41176588954
+    },
+    {
+      "name": "ZSUMP",
+      "score": 79030.41176588954
+    },
+    {
+      "name": "ZINST101",
+      "score": 72085.6482614384
+    },
+    {
+      "name": "PCVSG",
+      "score": 65217.4677327927
+    },
+    {
+      "name": "WTIN",
+      "score": 60606.06924014855
+    },
+    {
+      "name": "ECVSG",
+      "score": 51729.057066225054
+    },
+    {
+      "name": "PCTMT",
+      "score": 36055.47940935343
+    },
+    {
+      "name": "ZINST87",
+      "score": 34888.619839607854
+    },
+    {
+      "name": "WSTM1",
+      "score": 31261.73274059326
+    },
+    {
+      "name": "YNET",
+      "score": 28354.312056582323
+    }
+  ],
+  "threshold": 1.0,
+  "feature_method": "all",
+  "total_features": 300,
+  "useless_count": 121,
+  "useless_percentage": 40.33333333333333
+}

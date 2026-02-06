@@ -1,5 +1,6 @@
 import os
 import re
+import json
 import numpy as np
 import pandas as pd
 import multiprocessing
@@ -113,12 +114,14 @@ def load_one_csv(file_name: str, folder_path: str, include_time: bool = False):
     return df, y
 
 
-def load_Xy(folder_path: str, include_time: bool = False, n_workers=None, verbose=True):
+def load_Xy(folder_path: str, include_time: bool = False, n_workers=None, verbose=True,
+            exclude_useless_features: bool = True, useless_features_json: str = "useless_features_all.json"):
     """
     폴더 전체의 CSV를 읽어 (X,y,feature_names) 반환.
     - 파일 리스트는 (라벨 순서, 번호 순서) 로 정렬
     - multiprocessing 사용
     - verbose=True일 때 실제 클래스 분포 출력
+    - exclude_useless_features=True(기본값)일 때 쓸모없는 변수를 자동으로 제거
     """
     file_list = [f for f in os.listdir(folder_path) if f.lower().endswith(".csv")]
     file_list = [f for f in file_list if infer_label_id(f) is not None]
@@ -151,6 +154,29 @@ def load_Xy(folder_path: str, include_time: bool = False, n_workers=None, verbos
 
     X = np.vstack(X_list)
     y = np.concatenate(y_list)
+
+    # 쓸모없는 변수 제거
+    if exclude_useless_features:
+        if os.path.exists(useless_features_json):
+            with open(useless_features_json, 'r') as f:
+                useless_data = json.load(f)
+            useless_list = useless_data.get("useless_features", [])
+
+            # 제거할 인덱스 찾기
+            remove_indices = [i for i, name in enumerate(feature_names) if name in useless_list]
+            keep_indices = [i for i in range(len(feature_names)) if i not in remove_indices]
+
+            if verbose:
+                print(f"\n🗑️  Removing {len(remove_indices)} useless features (threshold={useless_data.get('threshold', 1.0)})")
+                print(f"   Features: {len(feature_names)} → {len(keep_indices)}")
+
+            # 변수 제거
+            X = X[:, keep_indices]
+            feature_names = [feature_names[i] for i in keep_indices]
+        else:
+            if verbose:
+                print(f"\n⚠️  Useless features JSON file not found: {useless_features_json}")
+                print("   Skipping feature removal. Run generate_useless_feature_list.py first.")
 
     # 실제 데이터 클래스 분포 출력
     if verbose:

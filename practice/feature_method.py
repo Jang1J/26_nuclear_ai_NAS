@@ -234,6 +234,18 @@ class FeaturePhysics:
         self.feature_names_all = list(feature_names)
         name_to_idx = {name: i for i, name in enumerate(feature_names)}
 
+        # 필수 컬럼 존재 여부 체크 (GPT 제안)
+        all_required_cols = set(self._DERIV_TARGETS + self._SG_PRESSURE + self._SG_LEVEL + self._EXTRA_COLS)
+        missing_cols = [col for col in all_required_cols if col not in name_to_idx]
+
+        if missing_cols:
+            raise ValueError(
+                f"Physics 피처 생성에 필요한 컬럼이 없습니다.\n"
+                f"빠진 컬럼: {missing_cols}\n"
+                f"필수 컬럼: {sorted(all_required_cols)}\n"
+                f"현재 컬럼: {feature_names[:10]}... (총 {len(feature_names)}개)"
+            )
+
         # 미분 대상 인덱스
         self._deriv_idx = [name_to_idx[c] for c in self._DERIV_TARGETS]
 
