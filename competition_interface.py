@@ -105,6 +105,11 @@ class CompetitionSystem:
         # prefix 기반으로 올바른 파이프라인 로드
         self.preprocessing = PreprocessingPipeline.load(model_dir, prefix=prefix)
 
+        # GPT-A fix: 버퍼 크기 제한 — 일반식 (diff2=2, rolling=msw-1)
+        _msw = getattr(self.preprocessing.feature_transformer, 'moving_std_window', 3)
+        _lookback = max(2, _msw - 1)
+        self._buffer_maxlen = window_size + _lookback
+
         # useless features 목록 로드 (CWD 독립 경로 탐색)
         self._useless_features = set()
         resolved_useless = _resolve_useless_json_path(useless_features_json)
@@ -183,6 +188,7 @@ class CompetitionSystem:
         self._consecutive_class = None  # 연속으로 예측된 클래스
         self._consecutive_count = 0     # 연속 횟수
         self._prob_history = []         # 최근 확률 이력 (마진 계산용)
+        self._normal_streak = 0         # GPT-C fix: NORMAL 연속 횟수 (히스테리시스용)
 
     def receive_and_predict(self, row_data):
         """
@@ -207,8 +213,10 @@ class CompetitionSystem:
         if self._keep_indices is not None:
             row = row[self._keep_indices]
 
-        # 버퍼에 추가
+        # 버퍼에 추가 (GPT-A fix: 최근 _buffer_maxlen 행만 유지 → O(1))
         self.buffer.append(row)
+        if len(self.buffer) > self._buffer_maxlen:
+            self.buffer = self.buffer[-self._buffer_maxlen:]
         X_chunk = np.array(self.buffer)
 
         # 전처리
@@ -251,11 +259,24 @@ class CompetitionSystem:
                 'Class probabilities': probs,
             }
 
-        # NORMAL이면 연속 카운트 리셋 후 NORMAL 반환
+        # NORMAL이면 히스테리시스 처리 후 반환 (GPT-C fix v2: normal_streak 기반)
         if predicted_class == LABEL2ID["NORMAL"]:
-            self._consecutive_class = None
-            self._consecutive_count = 0
-            self._prob_history = []
+            self._normal_streak += 1
+            if self._consecutive_count > 0:
+                if self._normal_streak >= 2:
+                    # NORMAL 연속 2회 이상 → 강제 리셋 (확실한 정상 복귀)
+                    self._consecutive_class = None
+                    self._consecutive_count = 0
+                    self._prob_history = []
+                else:
+                    # NORMAL 1회 → 감쇠 (노이즈 1회 허용)
+                    self._consecutive_count = max(0, self._consecutive_count - 2)
+                    if self._consecutive_count > 0:
+                        # prob_history도 count에 맞게 트리밍 (일관성)
+                        self._prob_history = self._prob_history[-self._consecutive_count:]
+                    else:
+                        self._consecutive_class = None
+                        self._prob_history = []
             return {
                 'results': 'NORMAL',
                 'Diagnostic_time': None,
@@ -268,6 +289,9 @@ class CompetitionSystem:
         # 1등-2등 확률 차이 (마진)
         sorted_probs = sorted(y_prob, reverse=True)
         margin = sorted_probs[0] - sorted_probs[1] if len(sorted_probs) > 1 else sorted_probs[0]
+
+        # 사고 클래스 예측 → NORMAL 연속 끊김
+        self._normal_streak = 0
 
         # 연속 카운트 갱신
         if predicted_class == self._consecutive_class:

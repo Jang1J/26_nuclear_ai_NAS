@@ -9,8 +9,10 @@
 #
 # 환경: conda activate team_6
 
+set -e  # H3: 에러 발생 시 즉시 중단
+
 CONDA_ENV="team_6"
-DATA="data/data_new"
+DATA="${DATA:-data/data_new}"  # 환경변수로 데이터 경로 변경 가능
 
 # 공통 v3 옵션 (증강 + 고급 튜닝)
 V3_OPTS="--use_augmentation --augment_minority \

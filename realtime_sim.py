@@ -68,7 +68,8 @@ def extract_ground_truth(filename):
     if "_dt=" in basename:
         dt = int(basename.split("_dt=")[-1])
 
-    for label in LABELS:
+    # H8: 긴 레이블부터 매칭 (LOCA_CL_RCP가 LOCA_CL보다 먼저 매칭되도록)
+    for label in sorted(LABELS, key=len, reverse=True):
         if label == "NORMAL":
             continue
         if basename.startswith(label):

@@ -237,14 +237,15 @@ def _compile_model(model, args, steps_per_epoch=None):
                 min_lr_factor=args.get("lr_min_factor", 0.01),
             )
 
-    # ── 옵티마이저 ──
+    # ── 옵티마이저 (C3: gradient clipping 추가) ──
     if args.get("use_adamw"):
         optimizer = optimizers.AdamW(
             learning_rate=lr,
             weight_decay=args.get("weight_decay", 1e-4),
+            clipnorm=1.0,
         )
     else:
-        optimizer = optimizers.Adam(learning_rate=lr)
+        optimizer = optimizers.Adam(learning_rate=lr, clipnorm=1.0)
 
     # ── 손실 함수 ──
     if args.get("use_focal_loss"):
@@ -273,7 +274,7 @@ def _fit_model(model, Xtr, ytr, Xva, yva, args, class_weight=None):
         patience = args.get("early_stopping_patience", 15)
         cb.append(
             callbacks.EarlyStopping(
-                monitor="val_accuracy", mode="max", patience=patience,
+                monitor="val_loss", mode="min", patience=patience,
                 restore_best_weights=True, verbose=1,
             )
         )
@@ -402,6 +403,14 @@ def run_single(args):
 
     print_label_dist("\ntrain (before aug)", ytr)
 
+    # 6) class_weight — 증강 **전** 원본 분포로 계산 (C2 fix)
+    class_weight = None
+    if args["use_class_weight"]:
+        class_weight = compute_class_weight(ytr)
+        print("\n[Class weights] (증강 전 원본 기준)")
+        for cid, w in sorted(class_weight.items()):
+            print(f"  {ID2LABEL.get(cid, cid):15s}: {w:.3f}")
+
     # ──────────────────────────────────────────────
     # 5.5) 데이터 증강 (학습 데이터에만 적용)
     # ──────────────────────────────────────────────
@@ -422,30 +431,34 @@ def run_single(args):
 
         # 소수 클래스 오버샘플링
         if args.get("augment_minority"):
-            n_before_min = len(ytr)
-            minority = MinorityOversampler(
-                target_classes=args.get("minority_classes", [8]),
-                target_ratio=args.get("minority_ratio", 2.0),
-                jitter_std=0.02,
-                scale_range=(0.90, 1.10),
-                seed=args["seed"],
-            )
-            Xtr_m, ytr = minority.oversample(Xtr_m, ytr)
-            print(f"[Augmentation] Minority: {n_before_min} -> {len(ytr)} samples")
+            # M4: minority_classes 자동 감지 (CLI에서 지정하지 않은 경우)
+            minority_cls = args.get("minority_classes")
+            if minority_cls is None or len(minority_cls) == 0:
+                unique, counts = np.unique(ytr, return_counts=True)
+                avg_count = counts.mean()
+                minority_cls = [int(c) for c, cnt in zip(unique, counts) if cnt < avg_count * 0.5]
+                if minority_cls:
+                    print(f"[Auto-detect] Minority classes: {[ID2LABEL.get(c, c) for c in minority_cls]}")
+                else:
+                    print("[Auto-detect] No minority classes found, skipping oversampling")
+
+            if minority_cls:
+                n_before_min = len(ytr)
+                minority = MinorityOversampler(
+                    target_classes=minority_cls,
+                    target_ratio=args.get("minority_ratio", 2.0),
+                    jitter_std=args.get("jitter_std", 0.02),
+                    scale_range=(args.get("scale_min", 0.90), args.get("scale_max", 1.10)),
+                    seed=args["seed"],
+                )
+                Xtr_m, ytr = minority.oversample(Xtr_m, ytr)
+                print(f"[Augmentation] Minority: {n_before_min} -> {len(ytr)} samples")
 
         print_label_dist("\ntrain (after aug)", ytr)
 
     if yva is not None:
         print_label_dist("val", yva)
     print_label_dist("test", yte)
-
-    # 6) class_weight
-    class_weight = None
-    if args["use_class_weight"]:
-        class_weight = compute_class_weight(ytr)
-        print("\n[Class weights]")
-        for cid, w in sorted(class_weight.items()):
-            print(f"  {ID2LABEL.get(cid, cid):15s}: {w:.3f}")
 
     # 7) 모델 빌드
     model = _build_model_single(args, D=D, W=W if is_seq_model else None)

@@ -134,14 +134,11 @@ class FeaturePhysics:
         return self.transform(X, y)
 
     def _moving_std(self, arr):
-        """이동 표준편차 (numpy 구현)."""
-        n = len(arr)
-        w = self.moving_std_window
-        result = np.zeros(n, dtype=np.float32)
-        for i in range(n):
-            start = max(0, i - w + 1)
-            window = arr[start:i + 1]
-            result[i] = np.std(window, ddof=1) if len(window) > 1 else 0.0
+        """이동 표준편차 (벡터화 구현, H6 fix)."""
+        import pandas as pd
+        result = pd.Series(arr).rolling(
+            window=self.moving_std_window, min_periods=2
+        ).std().fillna(0.0).values.astype(np.float32)
         return result
 
 
