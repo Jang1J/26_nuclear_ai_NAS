@@ -21,6 +21,7 @@ V3_OPTS="--use_augmentation --augment_minority \
 
 echo "========================================"
 echo "  3초 진단 모델 학습 (v3)"
+echo "  - 모델: MLP, CNN(Multi-Scale), CNN+Att, TCN, Transformer"
 echo "  - 증강: Jitter + Scaling + MinorityOversampling"
 echo "  - 옵티마이저: AdamW (weight_decay=1e-4)"
 echo "  - 손실: Focal Loss (gamma=2.0)"
@@ -33,7 +34,7 @@ echo "[1/5] MLP"
 conda run -n $CONDA_ENV python -m practice.main \
   --data_folder $DATA \
   --model_type mlp \
-  --feature_method physics \
+  \
   --epochs 100 \
   --batch_size 128 \
   --use_val \
@@ -48,7 +49,7 @@ echo "[2/5] CNN (3초 윈도우)"
 conda run -n $CONDA_ENV python -m practice.main \
   --data_folder $DATA \
   --model_type cnn \
-  --feature_method physics \
+  \
   --window_size 3 --stride 1 \
   --epochs 100 \
   --batch_size 128 \
@@ -64,7 +65,7 @@ echo "[3/5] CNN + Attention (추천)"
 conda run -n $CONDA_ENV python -m practice.main \
   --data_folder $DATA \
   --model_type cnn_attention \
-  --feature_method physics \
+  \
   --window_size 3 --stride 1 \
   --epochs 100 \
   --batch_size 128 \
@@ -74,13 +75,13 @@ conda run -n $CONDA_ENV python -m practice.main \
   $V3_OPTS \
   --train
 
-# 4. LSTM
+# 4. TCN (LSTM 대체)
 echo ""
-echo "[4/5] LSTM"
+echo "[4/5] TCN"
 conda run -n $CONDA_ENV python -m practice.main \
   --data_folder $DATA \
-  --model_type lstm \
-  --feature_method physics \
+  --model_type tcn \
+  \
   --window_size 3 --stride 1 \
   --epochs 100 \
   --batch_size 128 \
@@ -96,7 +97,7 @@ echo "[5/5] Transformer"
 conda run -n $CONDA_ENV python -m practice.main \
   --data_folder $DATA \
   --model_type transformer \
-  --feature_method physics \
+  \
   --window_size 3 --stride 1 \
   --epochs 100 \
   --batch_size 128 \

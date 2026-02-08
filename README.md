@@ -1,7 +1,7 @@
 # 원전 사고 진단 AI 시스템
 
 원자력발전소 9종 사고를 실시간으로 진단하는 딥러닝 시스템.
-CNN+Attention 기반 97.6% 정확도, 0.05ms/sample 추론 속도.
+MLP 95.95%, Transformer 95.84%, CNN+Attention 95.09% 정확도.
 
 ---
 
@@ -11,7 +11,7 @@ CNN+Attention 기반 97.6% 정확도, 0.05ms/sample 추론 속도.
 - **5가지 모델**: MLP, CNN, CNN+Attention, LSTM, Transformer
 - **Physics 피처 엔지니어링**: 179 -> 207 피처 (미분, 비대칭, 커플링)
 - **XAI 분석**: SHAP 피처 중요도 + Attention 시각화
-- **데이터 증강**: Jitter, Scaling, Mixup, 소수 클래스 오버샘플링
+- **데이터 증강**: Jitter, Scaling, 소수 클래스 오버샘플링
 - **실시간 추론**: 연속 합의 기반 4-Tier 확정 로직
 - **파이프라인 격리**: 모델별 전처리 파일 1:1 매핑 (덮어쓰기 방지)
 
@@ -26,14 +26,13 @@ NAS/
 │   ├── dataloader.py                  # 데이터 로딩 (런 단위)
 │   ├── preprocessing.py               # 전처리 파이프라인 (학습=추론 일치)
 │   ├── model.py                       # 5가지 모델 아키텍처
-│   ├── feature_method.py              # 피처 엔지니어링 (6종)
+│   ├── feature_method.py              # 피처 엔지니어링 (Physics)
 │   ├── data_split.py                  # 런 단위 데이터 분할 (누수 방지)
 │   ├── augmentation.py                # 시계열 데이터 증강
 │   ├── xai.py                         # XAI 분석 (SHAP + Attention)
 │   └── utils_plot.py                  # 시각화 유틸
 ├── competition_interface.py           # 경진대회 실시간 인터페이스
-├── realtime_inference.py              # 실시간 추론 (기본)
-├── realtime_inference_optimized.py    # 실시간 추론 (최적화)
+├── realtime_sim.py                    # 실시간 진단 시뮬레이터
 ├── train_3sec_champion.sh             # 학습 스크립트
 ├── useless_features_all.json          # 불필요 변수 목록 (121개)
 ├── data/data_new/                     # 센서 데이터 (75개 CSV)
@@ -68,7 +67,6 @@ pip install -r requirements.txt
 conda run -n team_6 python -m practice.main \
     --data_folder data/data_new \
     --model_type cnn_attention \
-    --feature_method physics \
     --window_size 3 --stride 1 \
     --epochs 100 --batch_size 128 \
     --use_val --use_class_weight \
@@ -81,7 +79,6 @@ conda run -n team_6 python -m practice.main \
 conda run -n team_6 python -m practice.main \
     --data_folder data/data_new \
     --model_type cnn_attention \
-    --feature_method physics \
     --window_size 3 --stride 1 \
     --epochs 100 --batch_size 128 --lr 1e-3 \
     --use_val --use_class_weight \
@@ -142,13 +139,9 @@ conda run -n team_6 python -m practice.xai \
 
 ### 피처 엔지니어링
 
-| 방법 | 인자 | 출력 피처 수 | 설명 |
-|------|------|-------------|------|
-| all | `--feature_method all` | 179 | 원본 (불필요 121개 제거) |
-| physics | `--feature_method physics` | 207 | 원본 + 미분/비대칭/커플링 (추천) |
-| diff | `--feature_method diff` | 358 | 원본 + 1차 미분 |
-| stats | `--feature_method stats` | 537 | 원본 + 이동평균/표준편차 |
-| selection | `--feature_method selection` | topk | LGBM 기반 Top-K 선택 |
+| 방법 | 출력 피처 수 | 설명 |
+|------|-------------|------|
+| physics | 207 | 원본 179 + 미분/비대칭/커플링 28개 추가 |
 
 ### 학습 설정
 
@@ -173,7 +166,6 @@ conda run -n team_6 python -m practice.xai \
 
 # 손실 함수
 --use_focal_loss                # Focal Loss (클래스 불균형)
---label_smoothing 0.1           # Label Smoothing
 
 # 콜백
 --early_stopping_patience 25    # EarlyStopping patience
@@ -317,10 +309,9 @@ xai_results/                                     # XAI 분석
 
 ### v2.0 (XAI + 학습 개선)
 - XAI 모듈 (SHAP GradientExplainer + Attention 시각화)
-- 데이터 증강 (Jitter, Scaling, Mixup, MinorityOversampling)
+- 데이터 증강 (Jitter, Scaling, MinorityOversampling)
 - Focal Loss, AdamW, Warmup+Cosine LR 스케줄
-- Label Smoothing, EarlyStopping patience 조정
-- 97.6% 정확도 달성 (v1 대비 +2.8%p)
+- EarlyStopping patience 조정
 
 ### v1.0 (초기)
 - 5가지 모델 아키텍처 (MLP/CNN/CNN+Attention/LSTM/Transformer)

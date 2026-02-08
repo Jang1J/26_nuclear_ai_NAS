@@ -1,213 +1,12 @@
-import os
+"""
+Physics 기반 피처 엔지니어링.
+
+원본 179개 피처에 도메인 지식 기반 28개 물리 피처를 추가하여 207개 피처 생성.
+- 1차/2차 미분 (8+8 = 16개)
+- 루프 간 비대칭 (7개)
+- 물리적 상관관계 커플링 (5개)
+"""
 import numpy as np
-
-try:
-    import lightgbm as lgb
-except Exception:
-    lgb = None
-
-
-class FeatureAll:
-    def fit(self, X, y, feature_names):
-        self.feature_names_all = list(feature_names)
-        self.feature_names = list(feature_names)
-        return self
-
-    def transform(self, X, y):
-        return X, y, self.feature_names
-
-    def transform_runs(self, X_runs, y_runs):
-        return X_runs, y_runs, self.feature_names
-
-    def fit_transform(self, X, y, feature_names):
-        self.fit(X, y, feature_names)
-        return self.transform(X, y)
-
-
-class FeatureChangeOnly:
-    def fit(self, X, y, feature_names):
-        diff = X.max(axis=0) - X.min(axis=0)
-        self.keep_idx = np.where(diff > 0)[0]
-        self.feature_names_all = list(feature_names)
-        self.feature_names = [feature_names[i] for i in self.keep_idx]
-        return self
-
-    def transform(self, X, y):
-        return X[:, self.keep_idx], y, self.feature_names
-
-    def transform_runs(self, X_runs, y_runs):
-        out_X = [X[:, self.keep_idx] for X in X_runs]
-        return out_X, y_runs, self.feature_names
-
-    def fit_transform(self, X, y, feature_names):
-        self.fit(X, y, feature_names)
-        return self.transform(X, y)
-
-
-class FeatureSelectionLGBM:
-    """LightGBM importance 기반 Top-K 선택."""
-    def __init__(
-        self,
-        seed=0,
-        model_path="feature_selector_lgbm.pkl",
-        save_model=True,
-        importance_type="split",
-        topk=300,
-        topk_plot_path=None,
-        n_estimators=400,
-        learning_rate=0.05,
-        num_leaves=63,
-        subsample=0.9,
-        colsample_bytree=0.9,
-    ):
-        self.seed = seed
-        self.model_path = model_path
-        self.save_model = save_model
-        self.importance_type = importance_type
-        self.topk = topk
-        self.topk_plot_path = topk_plot_path
-
-        self.n_estimators = n_estimators
-        self.learning_rate = learning_rate
-        self.num_leaves = num_leaves
-        self.subsample = subsample
-        self.colsample_bytree = colsample_bytree
-
-        self.model = None
-        self.keep_idx = None
-        self.feature_names_all = None
-        self.feature_names = None
-
-    def fit(self, X, y, feature_names):
-        if lgb is None:
-            raise ImportError("lightgbm이 설치되어 있지 않습니다. pip install lightgbm")
-
-        self.feature_names_all = list(feature_names)
-
-        self.model = lgb.LGBMClassifier(
-            random_state=self.seed,
-            n_estimators=self.n_estimators,
-            learning_rate=self.learning_rate,
-            num_leaves=self.num_leaves,
-            subsample=self.subsample,
-            colsample_bytree=self.colsample_bytree,
-            n_jobs=-1,
-        )
-        self.model.fit(X, y)
-
-        imp = self.model.booster_.feature_importance(importance_type=self.importance_type)
-        imp = np.asarray(imp, dtype=np.float64)
-
-        order = np.argsort(-imp)
-        k = min(self.topk, len(order))
-        self.keep_idx = order[:k]
-        self.feature_names = [feature_names[i] for i in self.keep_idx]
-
-        if self.save_model:
-            import joblib
-            os.makedirs(os.path.dirname(self.model_path) or ".", exist_ok=True)
-            joblib.dump(
-                {"model": self.model, "keep_idx": self.keep_idx,
-                 "feature_names_all": self.feature_names_all,
-                 "feature_names": self.feature_names},
-                self.model_path,
-            )
-
-        if self.topk_plot_path is not None:
-            try:
-                import matplotlib.pyplot as plt
-                os.makedirs(os.path.dirname(self.topk_plot_path) or ".", exist_ok=True)
-                top_imp = imp[self.keep_idx]
-                names = [feature_names[i] for i in self.keep_idx]
-                n_show = min(20, len(names))
-                plt.figure()
-                plt.barh(range(n_show)[::-1], top_imp[:n_show][::-1])
-                plt.yticks(range(n_show)[::-1], names[:n_show][::-1], fontsize=8)
-                plt.title("Top feature importance")
-                plt.tight_layout()
-                plt.savefig(self.topk_plot_path, dpi=150)
-                plt.close()
-            except Exception:
-                pass
-
-        return self
-
-    def transform(self, X, y):
-        return X[:, self.keep_idx], y, self.feature_names
-
-    def transform_runs(self, X_runs, y_runs):
-        out_X = [X[:, self.keep_idx] for X in X_runs]
-        return out_X, y_runs, self.feature_names
-
-    def fit_transform(self, X, y, feature_names):
-        self.fit(X, y, feature_names)
-        return self.transform(X, y)
-
-
-class FeatureWithDiff:
-    """원본 + 1차 차분. 런 단위로 적용하면 경계 누수 없음."""
-    def fit(self, X, y, feature_names):
-        self.feature_names_all = list(feature_names)
-        diff_names = [f"{fn}_diff" for fn in feature_names]
-        self.feature_names = list(feature_names) + diff_names
-        return self
-
-    def transform(self, X, y):
-        diff = np.zeros_like(X)
-        diff[1:] = X[1:] - X[:-1]
-        X_aug = np.hstack([X, diff])
-        return X_aug, y, self.feature_names
-
-    def transform_runs(self, X_runs, y_runs):
-        """런 단위로 diff 계산 -> 경계 누수 없음"""
-        out_X = []
-        for X_run in X_runs:
-            diff = np.zeros_like(X_run)
-            diff[1:] = X_run[1:] - X_run[:-1]
-            out_X.append(np.hstack([X_run, diff]))
-        return out_X, y_runs, self.feature_names
-
-    def fit_transform(self, X, y, feature_names):
-        self.fit(X, y, feature_names)
-        return self.transform(X, y)
-
-
-class FeatureWithStats:
-    """원본 + 이동평균 + 이동표준편차. 런 단위 적용 지원."""
-    def __init__(self, stat_window=5):
-        self.stat_window = stat_window
-
-    def fit(self, X, y, feature_names):
-        self.feature_names_all = list(feature_names)
-        mean_names = [f"{fn}_rmean{self.stat_window}" for fn in feature_names]
-        std_names = [f"{fn}_rstd{self.stat_window}" for fn in feature_names]
-        self.feature_names = list(feature_names) + mean_names + std_names
-        return self
-
-    def transform(self, X, y):
-        import pandas as pd
-        df = pd.DataFrame(X)
-        rolling = df.rolling(window=self.stat_window, min_periods=1)
-        rmean = rolling.mean().values.astype(np.float32)
-        rstd = rolling.std().fillna(0).values.astype(np.float32)
-        X_aug = np.hstack([X, rmean, rstd])
-        return X_aug, y, self.feature_names
-
-    def transform_runs(self, X_runs, y_runs):
-        """런 단위로 rolling 계산 -> 경계 누수 없음"""
-        import pandas as pd
-        out_X = []
-        for X_run in X_runs:
-            df = pd.DataFrame(X_run)
-            rolling = df.rolling(window=self.stat_window, min_periods=1)
-            rmean = rolling.mean().values.astype(np.float32)
-            rstd = rolling.std().fillna(0).values.astype(np.float32)
-            out_X.append(np.hstack([X_run, rmean, rstd]))
-        return out_X, y_runs, self.feature_names
-
-    def fit_transform(self, X, y, feature_names):
-        self.fit(X, y, feature_names)
-        return self.transform(X, y)
 
 
 class FeaturePhysics:
@@ -335,25 +134,19 @@ class FeaturePhysics:
         return self.transform(X, y)
 
     def _moving_std(self, arr):
-        import pandas as pd
-        s = pd.Series(arr)
-        return s.rolling(
-            window=self.moving_std_window, min_periods=1
-        ).std().fillna(0).values.astype(np.float32)
+        """이동 표준편차 (numpy 구현)."""
+        n = len(arr)
+        w = self.moving_std_window
+        result = np.zeros(n, dtype=np.float32)
+        for i in range(n):
+            start = max(0, i - w + 1)
+            window = arr[start:i + 1]
+            result[i] = np.std(window, ddof=1) if len(window) > 1 else 0.0
+        return result
 
 
-def make_feature_method(name, **kwargs):
-    if name == "all":
-        return FeatureAll()
-    elif name == "change":
-        return FeatureChangeOnly()
-    elif name == "selection":
-        return FeatureSelectionLGBM(**kwargs)
-    elif name == "diff":
-        return FeatureWithDiff()
-    elif name == "stats":
-        return FeatureWithStats(**kwargs)
-    elif name == "physics":
+def make_feature_method(name="physics", **kwargs):
+    """Physics 피처 엔지니어링 생성."""
+    if name == "physics":
         return FeaturePhysics(**kwargs)
-
-    raise ValueError(f"unknown feature method: {name}")
+    raise ValueError(f"unknown feature method: {name} (only 'physics' is supported)")

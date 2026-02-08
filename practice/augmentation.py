@@ -4,8 +4,7 @@
 원전 사고 센서 데이터에 특화된 증강 기법:
 1. Jitter: 가우시안 노이즈 추가 (센서 노이즈 시뮬레이션)
 2. Scaling: 랜덤 진폭 스케일링 (센서 캘리브레이션 편차 시뮬레이션)
-3. Mixup: 같은 클래스 내 선형 보간 (다양성 증가)
-4. MinorityOversampler: 소수 클래스 타겟 오버샘플링
+3. MinorityOversampler: 소수 클래스 타겟 오버샘플링
 """
 import numpy as np
 from typing import Tuple, Optional, List
@@ -21,7 +20,6 @@ class TimeSeriesAugmenter:
         self,
         jitter_std: float = 0.01,
         scale_range: Tuple[float, float] = (0.95, 1.05),
-        mixup_alpha: float = 0.0,
         augment_prob: float = 0.5,
         seed: Optional[int] = None,
     ):
@@ -29,13 +27,11 @@ class TimeSeriesAugmenter:
         Args:
             jitter_std: 가우시안 노이즈 표준편차 (신호 std 대비 비율)
             scale_range: (min, max) 스케일링 범위
-            mixup_alpha: Mixup beta 분포 파라미터 (0 = 비활성)
             augment_prob: 증강 적용 확률
             seed: 랜덤 시드
         """
         self.jitter_std = jitter_std
         self.scale_range = scale_range
-        self.mixup_alpha = mixup_alpha
         self.augment_prob = augment_prob
         self.rng = np.random.default_rng(seed)
 
@@ -76,54 +72,6 @@ class TimeSeriesAugmenter:
         ).astype(np.float32)
         return X * scale
 
-    def mixup(
-        self, X: np.ndarray, y: np.ndarray
-    ) -> Tuple[np.ndarray, np.ndarray]:
-        """
-        같은 클래스 내에서만 Mixup (안전성 보장).
-
-        Args:
-            X: (N, W, D) or (N, D)
-            y: (N,)
-
-        Returns:
-            X_aug, y_aug: 원본 + 증강 데이터
-        """
-        if self.mixup_alpha <= 0:
-            return X, y
-
-        X_new, y_new = [], []
-
-        for label in np.unique(y):
-            mask = y == label
-            X_cls = X[mask]
-            n = len(X_cls)
-            if n < 2:
-                continue
-
-            n_mix = n // 2
-            lam = self.rng.beta(self.mixup_alpha, self.mixup_alpha, size=n_mix)
-
-            idx = self.rng.permutation(n)
-            for i in range(n_mix):
-                i1, i2 = idx[2 * i], idx[2 * i + 1]
-                l = lam[i]
-                if X.ndim == 3:
-                    l = l.reshape(1, 1)
-                else:
-                    l = l.reshape(1)
-                x_mix = (l * X_cls[i1] + (1 - l) * X_cls[i2]).astype(np.float32)
-                X_new.append(x_mix)
-                y_new.append(label)
-
-        if len(X_new) > 0:
-            X_mixed = np.stack(X_new)
-            y_mixed = np.array(y_new, dtype=np.int64)
-            X = np.concatenate([X, X_mixed], axis=0)
-            y = np.concatenate([y, y_mixed])
-
-        return X, y
-
     def augment(
         self, X: np.ndarray, y: np.ndarray
     ) -> Tuple[np.ndarray, np.ndarray]:
@@ -157,10 +105,6 @@ class TimeSeriesAugmenter:
         # 원본 + 증강 합침
         X_out = np.concatenate([X, X_augmented], axis=0)
         y_out = np.concatenate([y, y_to_aug])
-
-        # Mixup (옵션)
-        if self.mixup_alpha > 0:
-            X_out, y_out = self.mixup(X_out, y_out)
 
         # 셔플
         perm = self.rng.permutation(len(X_out))

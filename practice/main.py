@@ -10,7 +10,7 @@
   5.5. (옵션) 데이터 증강 적용
   6. 모델 학습/평가
 
-v2: 데이터 증강, 고급 LR 스케줄링, AdamW, Focal Loss, Label Smoothing 추가
+v2: 데이터 증강, 고급 LR 스케줄링, AdamW, Focal Loss 추가
 """
 import argparse
 import time
@@ -19,6 +19,8 @@ from pathlib import Path
 
 import numpy as np
 import tensorflow as tf
+import keras
+import joblib
 from tensorflow.keras import callbacks, optimizers
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import classification_report
@@ -34,7 +36,7 @@ from .model import (
     build_mlp,
     build_cnn,
     build_cnn_attention,
-    build_lstm,
+    build_tcn,
     build_transformer,
 )
 from .utils_plot import save_acc_loss, save_confusion_matrix, save_per_class_accuracy
@@ -58,12 +60,7 @@ def parse_args():
 
     p.add_argument(
         "--model_type", type=str, default="cnn",
-        choices=["mlp", "cnn", "cnn_attention", "lstm", "transformer"],
-    )
-
-    p.add_argument(
-        "--feature_method", type=str, default="all",
-        choices=["all", "change", "selection", "diff", "stats", "physics"],
+        choices=["mlp", "cnn", "cnn_attention", "tcn", "transformer"],
     )
 
     p.add_argument("--use_val", action="store_true")
@@ -75,15 +72,10 @@ def parse_args():
     p.add_argument("--lr", type=float, default=1e-3)
 
     p.add_argument("--train", action="store_true")
-    p.add_argument("--test_noise", type=float, default=0.0)
 
     p.add_argument("--use_class_weight", action="store_true")
     p.add_argument("--window_size", type=int, default=3, help="윈도우 크기 (3=3초 @1초 샘플링)")
     p.add_argument("--stride", type=int, default=1, help="윈도우 이동 간격 (1=1초 @1초 샘플링)")
-
-    # selection / stats 옵션
-    p.add_argument("--topk", type=int, default=300)
-    p.add_argument("--stat_window", type=int, default=5)
 
     # ── 데이터 증강 ──
     p.add_argument("--use_augmentation", action="store_true",
@@ -94,16 +86,14 @@ def parse_args():
                     help="스케일링 최솟값")
     p.add_argument("--scale_max", type=float, default=1.05,
                     help="스케일링 최댓값")
-    p.add_argument("--mixup_alpha", type=float, default=0.0,
-                    help="Mixup alpha (0=비활성)")
     p.add_argument("--augment_prob", type=float, default=0.5,
                     help="증강 적용 확률")
 
     # ── 소수 클래스 증강 ──
     p.add_argument("--augment_minority", action="store_true",
                     help="소수 클래스 오버샘플링 활성화")
-    p.add_argument("--minority_classes", type=int, nargs="+", default=[8],
-                    help="증강할 소수 클래스 ID (기본: 8=ESDE_out)")
+    p.add_argument("--minority_classes", type=int, nargs="+", default=[2, 8],
+                    help="증강할 소수 클래스 ID (기본: 2=LOCA_CL, 8=ESDE_out)")
     p.add_argument("--minority_ratio", type=float, default=2.0,
                     help="소수 클래스 증강 비율")
 
@@ -127,8 +117,6 @@ def parse_args():
                     help="Focal Loss 사용 (클래스 불균형 대응)")
     p.add_argument("--focal_gamma", type=float, default=2.0,
                     help="Focal Loss γ 파라미터")
-    p.add_argument("--label_smoothing", type=float, default=0.0,
-                    help="Label smoothing (0=비활성)")
 
     # ── 콜백 ──
     p.add_argument("--early_stopping_patience", type=int, default=15,
@@ -162,8 +150,6 @@ def focal_loss(gamma=2.0):
 # ═══════════════════════════════════════════════════════════
 # Warmup + Cosine LR Schedule
 # ═══════════════════════════════════════════════════════════
-import keras
-
 @keras.saving.register_keras_serializable(package="NAS")
 class WarmupCosineSchedule(tf.keras.optimizers.schedules.LearningRateSchedule):
     """Warmup 후 Cosine Decay."""
@@ -198,26 +184,12 @@ class WarmupCosineSchedule(tf.keras.optimizers.schedules.LearningRateSchedule):
             "initial_lr": self.initial_lr,
             "total_steps": self.total_steps,
             "warmup_steps": self.warmup_steps,
-            "min_lr": self.min_lr,
+            "min_lr_factor": self.min_lr / self.initial_lr if self.initial_lr > 0 else 0.01,
         }
 
 
 def _build_feature_engineer(args, model_dir: Path, train_dir: Path):
-    if args["feature_method"] == "selection":
-        return make_feature_method(
-            "selection",
-            seed=args["seed"],
-            model_path=str(model_dir / "feature_selector_lgbm.pkl"),
-            save_model=True,
-            importance_type="split",
-            topk=args["topk"],
-            topk_plot_path=str(train_dir / "top20_importance.png"),
-        )
-    if args["feature_method"] == "stats":
-        return make_feature_method("stats", stat_window=args["stat_window"])
-    if args["feature_method"] == "physics":
-        return make_feature_method("physics", moving_std_window=3)
-    return make_feature_method(args["feature_method"])
+    return make_feature_method("physics", moving_std_window=3)
 
 
 def _build_model_single(args, D, W=None):
@@ -234,8 +206,8 @@ def _build_model_single(args, D, W=None):
         return build_cnn(W, D, n_classes)
     if model_type == "cnn_attention":
         return build_cnn_attention(W, D, n_classes)
-    if model_type == "lstm":
-        return build_lstm(W, D, n_classes)
+    if model_type == "tcn":
+        return build_tcn(W, D, n_classes)
     if model_type == "transformer":
         return build_transformer(W, D, n_classes)
 
@@ -301,7 +273,7 @@ def _fit_model(model, Xtr, ytr, Xva, yva, args, class_weight=None):
         patience = args.get("early_stopping_patience", 15)
         cb.append(
             callbacks.EarlyStopping(
-                monitor="val_loss", patience=patience,
+                monitor="val_accuracy", mode="max", patience=patience,
                 restore_best_weights=True, verbose=1,
             )
         )
@@ -324,11 +296,11 @@ def _fit_model(model, Xtr, ytr, Xva, yva, args, class_weight=None):
 
 
 def run_single(args):
-    is_seq_model = args["model_type"] in ("cnn", "cnn_attention", "lstm", "transformer")
+    is_seq_model = args["model_type"] in ("cnn", "cnn_attention", "tcn", "transformer")
 
     run_name = (
         f"{args['model_type']}"
-        f"__feat={args['feature_method']}"
+        f"__feat=physics"
         f"__val={int(args['use_val'])}"
         f"__ep={args['epochs']}"
         f"__cw={int(args['use_class_weight'])}"
@@ -384,7 +356,7 @@ def run_single(args):
         val_X, val_y, _ = feat.transform_runs(val_X, val_y)
 
     D = train_X[0].shape[1]
-    print(f"\n[Feature] {args['feature_method']}: {len(feature_names)} -> {D} features")
+    print(f"\n[Feature] physics: {len(feature_names)} -> {D} features")
 
     # ──────────────────────────────────────────────
     # 4) Scaler: train에서만 fit, 모든 세트에 transform
@@ -442,7 +414,6 @@ def run_single(args):
         augmenter = TimeSeriesAugmenter(
             jitter_std=args.get("jitter_std", 0.01),
             scale_range=(args.get("scale_min", 0.95), args.get("scale_max", 1.05)),
-            mixup_alpha=args.get("mixup_alpha", 0.0),
             augment_prob=args.get("augment_prob", 0.5),
             seed=args["seed"],
         )
@@ -499,8 +470,6 @@ def run_single(args):
             print(f"  Optimizer: AdamW (wd={args.get('weight_decay', 1e-4)})")
         if args.get("use_focal_loss"):
             print(f"  Loss: Focal Loss (γ={args.get('focal_gamma', 2.0)})")
-        if args.get("label_smoothing", 0) > 0:
-            print(f"  Label smoothing: {args['label_smoothing']}")
 
         history, train_time = _fit_model(model, Xtr_m, ytr, Xva_m, yva, args, class_weight=class_weight)
         print(f"\n[Training time] {train_time:.1f}s")
@@ -509,13 +478,9 @@ def run_single(args):
         print("[Saved model]", model_path)
 
         # 전처리 파이프라인 저장
-        import joblib
         from .preprocessing import PreprocessingPipeline
 
-        pipeline = PreprocessingPipeline(
-            feature_method=args["feature_method"],
-            **{k: args[k] for k in ["topk", "stat_window"] if k in args}
-        )
+        pipeline = PreprocessingPipeline(feature_method="physics")
         pipeline.feature_transformer = feat
         pipeline.scaler = scaler
         pipeline.feature_names_in = feature_names
@@ -530,7 +495,7 @@ def run_single(args):
         # Config 저장 (모든 하이퍼파라미터 포함)
         config = {
             "model_type": args["model_type"],
-            "feature_method": args["feature_method"],
+            "feature_method": "physics",
             "window_size": args["window_size"],
             "stride": args["stride"],
             "epochs": args["epochs"],
@@ -540,9 +505,6 @@ def run_single(args):
             "use_val": args["use_val"],
             "use_class_weight": args["use_class_weight"],
             "data_folder": args["data_folder"],
-            "topk": args.get("topk", 300),
-            "stat_window": args.get("stat_window", 5),
-            # v2 추가 설정
             "use_augmentation": args.get("use_augmentation", False),
             "augment_minority": args.get("augment_minority", False),
             "lr_schedule": args.get("lr_schedule"),
@@ -550,7 +512,6 @@ def run_single(args):
             "weight_decay": args.get("weight_decay", 1e-4),
             "use_focal_loss": args.get("use_focal_loss", False),
             "focal_gamma": args.get("focal_gamma", 2.0),
-            "label_smoothing": args.get("label_smoothing", 0.0),
             "early_stopping_patience": args.get("early_stopping_patience", 15),
         }
         config_path = model_dir / f"{run_name}__config.json"
@@ -578,9 +539,6 @@ def run_single(args):
         print("[Loaded model]", model_path)
 
     # 9) 테스트
-    if args["test_noise"] > 0:
-        Xte_m = Xte_m + args["test_noise"] * Xte_m * np.random.randn(*Xte_m.shape)
-
     test_loss, test_acc = model.evaluate(Xte_m, yte, verbose=0)
 
     t0 = time.time()

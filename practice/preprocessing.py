@@ -26,10 +26,10 @@ class PreprocessingPipeline:
         X_processed = pipeline.transform(X, feature_names)
     """
 
-    def __init__(self, feature_method="all", **feature_kwargs):
+    def __init__(self, feature_method="physics", **feature_kwargs):
         """
         Args:
-            feature_method: all, diff, stats, physics, selection
+            feature_method: 피처 엔지니어링 방법 (physics)
             **feature_kwargs: feature_method별 추가 인자
         """
         self.feature_method_name = feature_method

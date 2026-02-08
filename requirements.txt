@@ -22,6 +22,3 @@ shap>=0.45,<0.50           # numpy<2 호환 필요
 # 시각화
 matplotlib>=3.7
 seaborn>=0.12
-
-# 피처 선택 (selection method)
-lightgbm>=4.0

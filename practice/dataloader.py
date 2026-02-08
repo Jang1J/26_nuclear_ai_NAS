@@ -118,85 +118,6 @@ def load_one_csv(file_name: str, folder_path: str, include_time: bool = False):
     return df, y
 
 
-def load_Xy(folder_path: str, include_time: bool = False, n_workers=None, verbose=True,
-            exclude_useless_features: bool = True, useless_features_json: str = "useless_features_all.json"):
-    """
-    폴더 전체의 CSV를 읽어 (X, y, feature_names) 반환.
-    """
-    file_list = [f for f in os.listdir(folder_path) if f.lower().endswith(".csv")]
-    file_list = [f for f in file_list if infer_label_id(f) is not None]
-
-    def sort_key(f):
-        return (infer_label_id(f), extract_number(f), f)
-
-    file_list.sort(key=sort_key)
-
-    if n_workers is None:
-        n_workers = max(1, multiprocessing.cpu_count() - 1)
-
-    func_fixed = partial(load_one_csv, folder_path=folder_path, include_time=include_time)
-
-    with Pool(processes=n_workers) as pool:
-        results = list(pool.imap(func_fixed, file_list))
-
-    results = [r for r in results if r is not None]
-    if len(results) == 0:
-        raise RuntimeError("라벨(prefix)과 매칭되는 CSV가 없습니다. 파일명 prefix를 확인하세요.")
-
-    feature_names = list(results[0][0].columns)
-
-    X_list, y_list = [], []
-    for df, y in results:
-        if list(df.columns) != feature_names:
-            raise ValueError("CSV 파일들 간 컬럼 구성이 다릅니다.")
-        X_list.append(df.to_numpy(dtype=np.float32))
-        y_list.append(y)
-
-    X = np.vstack(X_list)
-    y = np.concatenate(y_list)
-
-    # 쓸모없는 변수 제거
-    if exclude_useless_features:
-        useless_features_json = _resolve_useless_json_path(useless_features_json)
-        if os.path.exists(useless_features_json):
-            with open(useless_features_json, 'r') as f:
-                useless_data = json.load(f)
-            useless_list = useless_data.get("useless_features", [])
-
-            remove_indices = [i for i, name in enumerate(feature_names) if name in useless_list]
-            keep_indices = [i for i in range(len(feature_names)) if i not in remove_indices]
-
-            if verbose:
-                print(f"\nRemoving {len(remove_indices)} useless features")
-                print(f"   Features: {len(feature_names)} -> {len(keep_indices)}")
-                print(f"   Resolved path: {useless_features_json}")
-
-            X = X[:, keep_indices]
-            feature_names = [feature_names[i] for i in keep_indices]
-        else:
-            if verbose:
-                print(f"\nUseless features JSON not found: {useless_features_json}")
-                print("   Skipping feature removal.")
-
-    if verbose:
-        print("\n[Data Class Distribution]")
-        unique_labels, counts = np.unique(y, return_counts=True)
-        print(f"Total samples: {len(y)}")
-        for label_id, count in zip(unique_labels, counts):
-            class_name = ID2LABEL.get(int(label_id), f"UNKNOWN({label_id})")
-            print(f"  {class_name:15s}: {count:6d} samples")
-
-        missing_classes = []
-        for i, label_name in enumerate(LABELS):
-            if i not in unique_labels:
-                missing_classes.append(label_name)
-
-        if missing_classes:
-            print(f"\n  Missing classes: {', '.join(missing_classes)}")
-
-    return X, y, feature_names
-
-
 def load_Xy_runs(folder_path: str, include_time: bool = False, n_workers=None, verbose=True,
                  exclude_useless_features: bool = True, useless_features_json: str = "useless_features_all.json"):
     """
@@ -315,10 +236,3 @@ def create_sliding_windows_from_runs(X_runs, y_runs, window_size, stride=1):
     return np.array(all_X, dtype=np.float32), np.array(all_y, dtype=np.int64)
 
 
-if __name__ == "__main__":
-    folder = "data/data_new"
-    X, y, feature_names = load_Xy(folder, include_time=False)
-    print("[dataloader]")
-    print("X:", X.shape)
-    print("y:", y.shape, "labels:", np.unique(y))
-    print("num_features:", len(feature_names))
