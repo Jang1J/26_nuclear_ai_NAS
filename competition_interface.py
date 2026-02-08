@@ -182,6 +182,7 @@ class CompetitionSystem:
         self.step = 0
         self.diagnosed_time = None    # 사고 진단 확정 시간
         self.diagnosed_class = None   # 확정된 사고 클래스명
+        self._diagnosed_tier = 0     # 확정에 사용된 Tier (1~4, 0=미확정)
         self._last_probs = [0.0] * len(LABELS)
 
         # Goal D: 연속 합의 기반 확정 로직
@@ -303,31 +304,35 @@ class CompetitionSystem:
 
         self._prob_history.append(confidence)
 
-        # 확정 조건 (3단계 트리거)
+        # 확정 조건 (4단계 트리거)
         diagnosed = False
+        tier = 0
 
         # Tier 1: 매우 높은 확신 + 연속 2회 → 즉시 확정 (빠른 진단)
         if confidence >= 0.90 and self._consecutive_count >= 2 and margin >= 0.3:
-            diagnosed = True
+            diagnosed, tier = True, 1
 
         # Tier 2: 높은 확신 + 연속 3회 → 확정 (안정적 진단)
         elif confidence >= 0.70 and self._consecutive_count >= 3 and margin >= 0.15:
-            diagnosed = True
+            diagnosed, tier = True, 2
 
         # Tier 3: 보통 확신 + 연속 5회 → 확정 (보수적 진단)
         elif confidence >= 0.50 and self._consecutive_count >= 5:
-            # 최근 5회 평균 확신도도 체크
             avg_conf = np.mean(self._prob_history[-5:])
             if avg_conf >= 0.55:
-                diagnosed = True
+                diagnosed, tier = True, 3
 
         # Tier 4: 시간 초과 대비 (55초 이상 경과 시 최선의 판단)
         elif elapsed >= 55.0 and confidence >= 0.40:
-            diagnosed = True
+            diagnosed, tier = True, 4
 
         if diagnosed:
             self.diagnosed_class = predicted_name
             self.diagnosed_time = elapsed
+            self._diagnosed_tier = tier  # 확정에 사용된 Tier 기록
+            print(f"[DIAGNOSED] Tier{tier} @ {elapsed:.0f}s | "
+                  f"{predicted_name} | conf={confidence:.3f} margin={margin:.3f} "
+                  f"consec={self._consecutive_count}")
             return {
                 'results': predicted_name,
                 'Diagnostic_time': elapsed,
