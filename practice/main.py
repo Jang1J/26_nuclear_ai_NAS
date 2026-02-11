@@ -92,16 +92,16 @@ def parse_args():
     # ── 소수 클래스 증강 ──
     p.add_argument("--augment_minority", action="store_true",
                     help="소수 클래스 오버샘플링 활성화")
-    p.add_argument("--minority_classes", type=int, nargs="+", default=[2, 8],
-                    help="증강할 소수 클래스 ID (기본: 2=LOCA_CL, 8=ESDE_out)")
-    p.add_argument("--minority_ratio", type=float, default=2.0,
+    p.add_argument("--minority_classes", type=int, nargs="+", default=[4, 5, 6, 7, 8],
+                    help="증강할 소수 클래스 ID (4=SGTR1, 5=SGTR2, 6=SGTR3, 7=ESDE_in, 8=ESDE_out)")
+    p.add_argument("--minority_ratio", type=float, default=10.0,
                     help="소수 클래스 증강 비율")
 
     # ── 학습률 스케줄링 ──
     p.add_argument("--lr_schedule", type=str, default=None,
                     choices=[None, "cosine", "warmup_cosine"],
                     help="학습률 스케줄 (None=ReduceLROnPlateau)")
-    p.add_argument("--warmup_ratio", type=float, default=0.1,
+    p.add_argument("--warmup_ratio", type=float, default=0.05,
                     help="Warmup 비율 (warmup_cosine만)")
     p.add_argument("--lr_min_factor", type=float, default=0.01,
                     help="최소 학습률 = lr × lr_min_factor")
@@ -119,7 +119,7 @@ def parse_args():
                     help="Focal Loss γ 파라미터")
 
     # ── 콜백 ──
-    p.add_argument("--early_stopping_patience", type=int, default=15,
+    p.add_argument("--early_stopping_patience", type=int, default=25,
                     help="EarlyStopping patience")
 
     return p.parse_args()
@@ -192,8 +192,9 @@ def _build_feature_engineer(args, model_dir: Path, train_dir: Path):
     return make_feature_method("physics", moving_std_window=3)
 
 
-def _build_model_single(args, D, W=None):
-    n_classes = len(LABELS)
+def _build_model_single(args, D, W=None, n_classes=None):
+    if n_classes is None:
+        n_classes = len(LABELS)
     model_type = args["model_type"]
 
     if model_type == "mlp":
@@ -272,6 +273,10 @@ def _fit_model(model, Xtr, ytr, Xva, yva, args, class_weight=None):
 
     if args["use_val"] and Xva is not None:
         patience = args.get("early_stopping_patience", 15)
+        # MLP 과적합 방지: patience를 7로 제한
+        if args["model_type"] == "mlp" and patience > 7:
+            patience = 7
+            print(f"[MLP] early_stopping_patience → {patience} (과적합 방지)")
         cb.append(
             callbacks.EarlyStopping(
                 monitor="val_loss", mode="min", patience=patience,
@@ -279,8 +284,14 @@ def _fit_model(model, Xtr, ytr, Xva, yva, args, class_weight=None):
             )
         )
 
+    # MLP 과적합 방지: max epochs 20으로 제한
+    epochs = args["epochs"]
+    if args["model_type"] == "mlp" and epochs > 20:
+        epochs = 20
+        print(f"[MLP] epochs → {epochs} (과적합 방지)")
+
     fit_kwargs = dict(
-        epochs=args["epochs"],
+        epochs=epochs,
         batch_size=args["batch_size"],
         callbacks=cb,
         verbose=1,
@@ -324,10 +335,14 @@ def run_single(args):
     # 1) 런 단위 데이터 로드
     # ──────────────────────────────────────────────
     X_runs, y_runs, run_names_list, feature_names = load_Xy_runs(
-        args["data_folder"], include_time=False
+        args["data_folder"], include_time=False,
     )
     total_samples = sum(len(X) for X in X_runs)
+
+    actual_classes = np.unique(np.concatenate(y_runs))
+    n_classes = len(actual_classes)
     print(f"\n[Data] {len(X_runs)} runs, {total_samples} samples, {len(feature_names)} features")
+    print(f"[Classes] {n_classes} classes: {[ID2LABEL.get(int(c), c) for c in actual_classes]}")
 
     # ──────────────────────────────────────────────
     # 2) 런 단위 train/val/test 분할 (누수 방지)
@@ -446,10 +461,11 @@ def run_single(args):
                 n_before_min = len(ytr)
                 minority = MinorityOversampler(
                     target_classes=minority_cls,
-                    target_ratio=args.get("minority_ratio", 2.0),
+                    target_ratio=args.get("minority_ratio", 10.0),
                     jitter_std=args.get("jitter_std", 0.02),
                     scale_range=(args.get("scale_min", 0.90), args.get("scale_max", 1.10)),
                     seed=args["seed"],
+                    balance_to_majority=True,
                 )
                 Xtr_m, ytr = minority.oversample(Xtr_m, ytr)
                 print(f"[Augmentation] Minority: {n_before_min} -> {len(ytr)} samples")
@@ -461,7 +477,7 @@ def run_single(args):
     print_label_dist("test", yte)
 
     # 7) 모델 빌드
-    model = _build_model_single(args, D=D, W=W if is_seq_model else None)
+    model = _build_model_single(args, D=D, W=W if is_seq_model else None, n_classes=n_classes)
     print(f"\n[Model] {args['model_type']}")
     model.summary()
 

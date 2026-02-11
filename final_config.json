@@ -1,0 +1,66 @@
+{
+    "project": "Nuclear Accident Classification (9-class)",
+    "version": "v3_final",
+    "date": "2025-02-10",
+
+    "primary_model": {
+        "name": "TCN",
+        "accuracy": "99.07%",
+        "sgtr_macro_f1": 0.99,
+        "leak1_accuracy": "96.1%",
+        "epochs": 100,
+        "seed": 0
+    },
+    "backup_model": {
+        "name": "CNN",
+        "accuracy": "98.89%",
+        "sgtr_macro_f1": 0.98,
+        "leak1_accuracy": "95.9%",
+        "epochs": 100,
+        "seed": 0
+    },
+
+    "feature_set": {
+        "name": "physics_v3",
+        "total_features": 282,
+        "base_features": 204,
+        "phase1_physics": 48,
+        "phase2_physics": 30,
+        "phase2_detail": {
+            "pairwise_diff": 9,
+            "derivative_diff": 6,
+            "deviation_from_avg": 9,
+            "argmin_gap": 4,
+            "pressurizer_sg_coupling": 2
+        }
+    },
+
+    "training_config": {
+        "optimizer": "AdamW",
+        "loss": "FocalLoss (gamma=2.0)",
+        "lr_scheduler": "Warmup Cosine",
+        "use_class_weight": true,
+        "leak1_weight": 4.0,
+        "use_sgtr_callback": true,
+        "loop2_postprocess": false,
+        "loop2_postprocess_note": "영향 +0.001 수준, 본질 아니므로 OFF 권장",
+        "window": 3,
+        "stride": 1,
+        "val_split": true
+    },
+
+    "v3_improvements_summary": [
+        "Phase2 features: +30 physics features (282 total)",
+        "leak=1 sample weighting: ×4.0 (핵심 개선)",
+        "SGTR F1 callback: best weights based on SGTR 3-class macro F1",
+        "MLP epoch cap: 10 epochs with min_delta=0.001",
+        "class_weight integrated into sample_weight (Keras compatibility fix)"
+    ],
+
+    "key_results": {
+        "TCN_leak1_improvement": "45.6% → 96.1% (+50.5%)",
+        "CNN_leak1_improvement": "67.6% → 95.9% (+28.3%)",
+        "seed_reproducibility": "3 seeds tested, leak=1 avg 96.5%±1.0%, all pass",
+        "postprocess_contribution": "+0.001 F1 (negligible)"
+    }
+}

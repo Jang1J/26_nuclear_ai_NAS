@@ -114,7 +114,7 @@ class TimeSeriesAugmenter:
 class MinorityOversampler:
     """
     소수 클래스 타겟 오버샘플링.
-    ESDE_out 등 성능이 낮은 클래스에 대해 집중적으로 증강.
+    각 소수 클래스를 다수 클래스 샘플 수에 맞춰 균형 증강.
     """
 
     def __init__(
@@ -124,17 +124,20 @@ class MinorityOversampler:
         jitter_std: float = 0.02,
         scale_range: Tuple[float, float] = (0.90, 1.10),
         seed: Optional[int] = None,
+        balance_to_majority: bool = True,
     ):
         """
         Args:
-            target_classes: 증강할 클래스 ID 목록 (예: [8] = ESDE_out)
-            target_ratio: 증강 비율 (2.0 = 원본의 2배로)
+            target_classes: 증강할 클래스 ID 목록
+            target_ratio: 증강 비율 (balance_to_majority=False일 때만 사용)
             jitter_std: 더 강한 노이즈 (소수 클래스 다양성 증가)
             scale_range: 더 넓은 스케일링 범위
             seed: 랜덤 시드
+            balance_to_majority: True면 다수 클래스 샘플 수에 맞춰 균형 증강
         """
         self.target_classes = target_classes
         self.target_ratio = target_ratio
+        self.balance_to_majority = balance_to_majority
         self.augmenter = TimeSeriesAugmenter(
             jitter_std=jitter_std,
             scale_range=scale_range,
@@ -148,6 +151,9 @@ class MinorityOversampler:
         """
         소수 클래스만 증강하여 추가.
 
+        balance_to_majority=True: 다수 클래스 샘플 수에 맞춰 균형 증강
+        balance_to_majority=False: 고정 ratio 사용 (기존 방식)
+
         Args:
             X: (N, W, D) or (N, D)
             y: (N,)
@@ -158,16 +164,29 @@ class MinorityOversampler:
         X_parts = [X]
         y_parts = [y]
 
+        # 다수 클래스 샘플 수 계산 (target_classes 제외한 클래스 중 최대)
+        if self.balance_to_majority:
+            unique, counts = np.unique(y, return_counts=True)
+            non_target_mask = ~np.isin(unique, self.target_classes)
+            if non_target_mask.any():
+                majority_count = int(counts[non_target_mask].max())
+            else:
+                majority_count = int(counts.max())
+
         for cls_id in self.target_classes:
             mask = y == cls_id
             X_cls = X[mask]
-            y_cls = y[mask]
             n_orig = len(X_cls)
 
             if n_orig == 0:
                 continue
 
-            n_aug = int(n_orig * (self.target_ratio - 1))
+            # 클래스별 필요 증강 수 계산
+            if self.balance_to_majority:
+                n_aug = majority_count - n_orig
+            else:
+                n_aug = int(n_orig * (self.target_ratio - 1))
+
             if n_aug <= 0:
                 continue
 
@@ -180,6 +199,8 @@ class MinorityOversampler:
 
             X_parts.append(X_augmented)
             y_parts.append(np.full(n_aug, cls_id, dtype=np.int64))
+
+            print(f"    {cls_id}: {n_orig} -> {n_orig + n_aug} samples (x{(n_orig + n_aug) / n_orig:.1f})")
 
         X_out = np.concatenate(X_parts, axis=0)
         y_out = np.concatenate(y_parts)

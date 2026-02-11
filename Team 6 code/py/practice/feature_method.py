@@ -33,9 +33,8 @@ class FeaturePhysics:
     _STEAM_FLOW = ["WSTM1", "WSTM2", "WSTM3"]          # Steam 유량 (10배 증가)
     _PHASE1_COLS = ["VSUMP"]                             # 섬프 수위 (LOCA 핵심)
 
-    def __init__(self, moving_std_window=3, diff_stride=1, **kwargs):
+    def __init__(self, moving_std_window=3, **kwargs):
         self.moving_std_window = moving_std_window
-        self.diff_stride = diff_stride  # 미분 간격 (1=매행, 5=5행 간격=5초 미분)
 
     def fit(self, X, y, feature_names):
         self.feature_names_all = list(feature_names)
@@ -110,12 +109,11 @@ class FeaturePhysics:
         """단일 배열에 대해 물리 피처 계산 (런 1개 or 전체)"""
         N, D = X.shape
 
-        # 1차/2차 미분 (diff_stride 행 간격)
-        ds = self.diff_stride
+        # 1차/2차 미분
         diff1 = np.zeros_like(X)
-        diff1[ds:] = X[ds:] - X[:-ds]
+        diff1[1:] = X[1:] - X[:-1]
         diff2 = np.zeros_like(X)
-        diff2[2*ds:] = diff1[2*ds:] - diff1[ds:-ds]
+        diff2[2:] = diff1[2:] - diff1[1:-1]
 
         d1_features = diff1[:, self._deriv_idx]
         d2_features = diff2[:, self._deriv_idx]
@@ -206,11 +204,11 @@ class FeaturePhysics:
 
         # d(PSG_range)/dt: 비대칭 확대 속도
         d_psg_range = np.zeros_like(psg_range)
-        d_psg_range[ds:] = psg_range[ds:] - psg_range[:-ds]
+        d_psg_range[1:] = psg_range[1:] - psg_range[:-1]
 
         # d(ZSGNOR_range)/dt: SG 레벨 비대칭 확대 속도
         d_zsgnor_range = np.zeros_like(zsgnor_range)
-        d_zsgnor_range[ds:] = zsgnor_range[ds:] - zsgnor_range[:-ds]
+        d_zsgnor_range[1:] = zsgnor_range[1:] - zsgnor_range[:-1]
 
         phase1_deriv = np.hstack([d_VSUMP, d_psg_range, d_zsgnor_range])
 

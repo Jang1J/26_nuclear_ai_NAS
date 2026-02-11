@@ -103,7 +103,9 @@ def _resolve_useless_json_path(useless_features_json: str) -> str:
     return useless_features_json  # 못 찾으면 원래대로 (이후 exists 체크에서 skip)
 
 
-def load_one_csv(file_name: str, folder_path: str, include_time: bool = False):
+def load_one_csv(file_name: str, folder_path: str, include_time: bool = False,
+                  skip_delay_rows: int = 0, delay_as_normal: bool = False,
+                  subsample_stride: int = 1):
     label_id = infer_label_id(file_name)
     if label_id is None:
         return None
@@ -114,14 +116,46 @@ def load_one_csv(file_name: str, folder_path: str, include_time: bool = False):
     if (not include_time) and ("KCNTOMS" in df.columns):
         df = df.drop(columns=["KCNTOMS"])
 
+    # 사고 파일의 앞 N행 처리 (delay 구간)
+    if skip_delay_rows > 0 and label_id != 0:  # NORMAL(0)이 아닌 경우만
+        if len(df) > skip_delay_rows:
+            if delay_as_normal:
+                # delay 구간을 NORMAL로 재라벨링하여 별도 반환
+                df_delay = df.iloc[:skip_delay_rows].reset_index(drop=True)
+                df_main = df.iloc[skip_delay_rows:].reset_index(drop=True)
+
+                # 서브샘플링 (시간 간격 일치용)
+                if subsample_stride > 1:
+                    df_delay = df_delay.iloc[::subsample_stride].reset_index(drop=True)
+                    df_main = df_main.iloc[::subsample_stride].reset_index(drop=True)
+
+                y_delay = np.full((len(df_delay),), 0, dtype=np.int64)  # NORMAL
+                y_main = np.full((len(df_main),), label_id, dtype=np.int64)
+                return (df_main, y_main), (df_delay, y_delay)
+            else:
+                # 기존 동작: delay 구간 버림
+                df = df.iloc[skip_delay_rows:].reset_index(drop=True)
+
+    # 서브샘플링 (시간 간격 일치용: 학습 1초 → 대회 5초 = stride 5)
+    if subsample_stride > 1:
+        df = df.iloc[::subsample_stride].reset_index(drop=True)
+
     y = np.full((len(df),), label_id, dtype=np.int64)
-    return df, y
+    return (df, y),
 
 
 def load_Xy_runs(folder_path: str, include_time: bool = False, n_workers=None, verbose=True,
-                 exclude_useless_features: bool = True, useless_features_json: str = "useless_features_all.json"):
+                 exclude_useless_features: bool = True, useless_features_json: str = "useless_features_all.json",
+                 skip_delay_rows: int = 0, delay_as_normal: bool = False,
+                 subsample_stride: int = 1):
     """
     런(파일) 단위로 데이터 로드. 파일 경계를 보존.
+
+    Args:
+        skip_delay_rows: 사고 파일 앞 N행 제거 (delay 구간 NORMAL 오라벨 제거용)
+        delay_as_normal: True이면 skip된 delay 행을 NORMAL로 재라벨링하여 포함
+                        (Operating Point 불일치 문제 해결: 사고 파일의 정상 구간을 NORMAL 학습 데이터로 활용)
+        subsample_stride: N행마다 1행만 사용 (시간 간격 일치: 학습 1초→대회 5초 = stride 5)
 
     Returns:
         X_runs: List[np.ndarray] - 각 파일(런)별 데이터
@@ -140,7 +174,9 @@ def load_Xy_runs(folder_path: str, include_time: bool = False, n_workers=None, v
     if n_workers is None:
         n_workers = max(1, multiprocessing.cpu_count() - 1)
 
-    func_fixed = partial(load_one_csv, folder_path=folder_path, include_time=include_time)
+    func_fixed = partial(load_one_csv, folder_path=folder_path, include_time=include_time,
+                         skip_delay_rows=skip_delay_rows, delay_as_normal=delay_as_normal,
+                         subsample_stride=subsample_stride)
 
     with Pool(processes=n_workers) as pool:
         results = list(pool.imap(func_fixed, file_list))
@@ -149,15 +185,30 @@ def load_Xy_runs(folder_path: str, include_time: bool = False, n_workers=None, v
     if len(valid) == 0:
         raise RuntimeError("라벨과 매칭되는 CSV가 없습니다.")
 
-    feature_names = list(valid[0][0][0].columns)
+    # load_one_csv returns: ((df_main, y_main),) or ((df_main, y_main), (df_delay, y_delay))
+    # First result's first tuple's first element has the columns
+    feature_names = list(valid[0][0][0][0].columns)
 
     X_runs, y_runs, run_names = [], [], []
-    for (df, y), fname in valid:
-        if list(df.columns) != feature_names:
+    delay_normal_count = 0
+    delay_normal_samples = 0
+    for result_tuple, fname in valid:
+        # Main data (항상 첫 번째 원소)
+        df_main, y_main = result_tuple[0]
+        if list(df_main.columns) != feature_names:
             raise ValueError("CSV 파일들 간 컬럼 구성이 다릅니다.")
-        X_runs.append(df.to_numpy(dtype=np.float32))
-        y_runs.append(y)
+        X_runs.append(df_main.to_numpy(dtype=np.float32))
+        y_runs.append(y_main)
         run_names.append(fname)
+
+        # Delay-as-NORMAL data (있으면 두 번째 원소)
+        if len(result_tuple) > 1:
+            df_delay, y_delay = result_tuple[1]
+            X_runs.append(df_delay.to_numpy(dtype=np.float32))
+            y_runs.append(y_delay)
+            run_names.append(f"NORMAL_delay_{fname}")  # 출처 추적용 이름
+            delay_normal_count += 1
+            delay_normal_samples += len(y_delay)
 
     # 쓸모없는 변수 제거
     if exclude_useless_features:
@@ -182,6 +233,14 @@ def load_Xy_runs(folder_path: str, include_time: bool = False, n_workers=None, v
                 print(f"\nUseless features JSON not found: {useless_features_json}")
 
     if verbose:
+        if subsample_stride > 1:
+            print(f"\n[Subsample] 매 {subsample_stride}행마다 1행 사용 (시간 간격 {subsample_stride}초로 일치)")
+        if skip_delay_rows > 0:
+            if delay_as_normal:
+                print(f"[Delay→NORMAL] 사고 파일 앞 {skip_delay_rows}행을 NORMAL로 재라벨링")
+                print(f"  → {delay_normal_count}개 파일에서 {delay_normal_samples}샘플 NORMAL 추가")
+            else:
+                print(f"[Skip delay] 사고 파일 앞 {skip_delay_rows}행 제거 (delay 구간 오라벨 방지)")
         print("\n[Data Class Distribution - Run-based]")
         print(f"Total runs: {len(X_runs)}")
         total_samples = sum(len(X) for X in X_runs)
