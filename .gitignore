@@ -1,0 +1,84 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+._*
+__MACOSX/
+
+# ──────────────────────────────
+# 프로젝트 데이터 & 결과물
+# ──────────────────────────────
+
+# 데이터 (용량 큼)
+data/
+
+# 학습된 모델 & 파이프라인 (루트 models/ — 이전 버전)
+models/*.keras
+models/*.npy
+models/*.pkl
+models/*.json
+
+# 학습/테스트 결과
+train_results/
+test_results/
+
+# XAI 분석 결과
+xai_results/
+
+# ──────────────────────────────
+# 대용량 폴더 제외
+# ──────────────────────────────
+
+# 테스트 데이터 (~1GB)
+_test_data/
+
+# 백업 폴더 (~500MB)
+_backup/
+_backup_final/
+
+# 예측 캐시
+_pred_cache_*.pkl
+
+# 학습 결과 (v3)
+train_results_9class_v3_ss5/
+test_results_9class_v3_ss5/
+
+# 로그
+*.log
+
+# ──────────────────────────────
+# 보안 & 기타
+# ──────────────────────────────
+
+# Claude Code
+.claude/
+
+# SSH keys
+*.pub
+
+# Eval
+eval*
+
+# Temporary
+*.tmp
+*.bak
+*~

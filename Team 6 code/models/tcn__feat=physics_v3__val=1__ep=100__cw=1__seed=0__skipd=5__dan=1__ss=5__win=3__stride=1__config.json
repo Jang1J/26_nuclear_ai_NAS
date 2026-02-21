@@ -1,0 +1,16 @@
+{
+  "version": "v3",
+  "model_type": "tcn",
+  "feature_method": "physics_v3",
+  "window_size": 3,
+  "stride": 1,
+  "epochs": 100,
+  "actual_epochs": 100,
+  "batch_size": 128,
+  "lr": 0.001,
+  "seed": 0,
+  "leak1_weight": 4.0,
+  "loop2_threshold": 0.55,
+  "use_sgtr_callback": false,
+  "n_features": 266
+}
